@@ -37,6 +37,13 @@ def env_list(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
 
 
+def env_choice(name: str, default: str, choices: set[str]) -> str:
+    value = os.getenv(name, default).strip().lower()
+    if value not in choices:
+        raise ImproperlyConfigured(f"{name} must be one of: {', '.join(sorted(choices))}.")
+    return value
+
+
 # Fail closed: local development explicitly enables debug in the untracked .env.
 DEBUG = env_bool("DJANGO_DEBUG", False)
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-local-development-only")
@@ -145,6 +152,8 @@ else:
 
 AUTHENTICATION_BACKENDS = [
     "axes.backends.AxesStandaloneBackend",
+    # Learners sign in with an email address; staff keep using auth.User accounts.
+    "valour.auth_backends.LearnerBackend",
     "django.contrib.auth.backends.ModelBackend",
 ]
 AUTH_PASSWORD_VALIDATORS = [
@@ -153,6 +162,31 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
+
+# Learner accounts: sign-up records an email address and a phone number, and
+# sign-in opens lesson notes, videos, and downloads.
+#   open       - the site stays public; accounts are only a record of visitors.
+#   lessons    - lesson content and downloads need a signed-in learner.
+#   everything - the catalogue and course outlines need a signed-in learner too.
+# Home, contact, health, and readiness always stay public.
+LEARNER_CONTENT_ACCESS = env_choice("LEARNER_CONTENT_ACCESS", "lessons", {"open", "lessons", "everything"})
+# Learners choose their own password, so their rules are lighter than the staff
+# policy above; AUTH_PASSWORD_VALIDATORS keeps protecting /admin/ sign-ins.
+LEARNER_PASSWORD_MIN_LENGTH = env_int("LEARNER_PASSWORD_MIN_LENGTH", 8, minimum=8, maximum=64)
+# Lockouts are counted per email address in the database, so they hold across
+# workers and deploys without storing visitor IP addresses.
+LEARNER_LOGIN_FAILURE_LIMIT = env_int("LEARNER_LOGIN_FAILURE_LIMIT", 8, minimum=3, maximum=50)
+LEARNER_LOGIN_LOCKOUT_MINUTES = env_int("LEARNER_LOGIN_LOCKOUT_MINUTES", 15, minimum=1, maximum=1440)
+# Without "keep me signed in" a learner session ends with the browser, matching
+# the staff policy. The opt-in may not outlast the longest sensible study break.
+LEARNER_SESSION_REMEMBER_DAYS = env_int("LEARNER_SESSION_REMEMBER_DAYS", 30, minimum=1, maximum=90)
+# Registration is by invitation: staff generate a single-use link in the admin
+# and send it to the person they want to admit, and /signup accepts nothing
+# else. "open" lets anyone register without a link.
+LEARNER_REGISTRATION = env_choice("LEARNER_REGISTRATION", "invite", {"invite", "open"})
+# How long a generated link stays usable before it must be replaced. 0 keeps a
+# link usable until it is spent or revoked.
+LEARNER_INVITE_VALID_DAYS = env_int("LEARNER_INVITE_VALID_DAYS", 14, minimum=0, maximum=365)
 
 # Database-backed lockouts work across workers and deploys. Lock by username,
 # not spoofable forwarded IP headers; do not retain staff IP addresses.

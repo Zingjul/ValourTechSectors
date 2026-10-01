@@ -1,7 +1,8 @@
 import { Suspense, useEffect, useState, type PropsWithChildren } from 'react'
-import { ArrowUpRight, Menu, X } from 'lucide-react'
+import { ArrowUpRight, CircleUserRound, LogOut, Menu, X } from 'lucide-react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { getSiteProfile, type SiteProfile } from '../api'
+import { useAuth } from '../auth/useAuth'
 import { LoadingState } from './States'
 
 function ScrollToTop() {
@@ -16,8 +17,40 @@ function PageFrame({ children }: PropsWithChildren) {
   return <div className="page-frame">{children}</div>
 }
 
+/**
+ * The account end of the navigation. Visitors get one way in, because accounts
+ * are created from an invitation link rather than from a public sign-up page;
+ * signed-in learners see who they are and how to sign out on a shared device.
+ */
+function AccountNavigation({ onNavigate }: { onNavigate: () => void }) {
+  const { status, learner, isAuthenticated, signOut } = useAuth()
+
+  if (status === 'loading') return <span className="nav-account-skeleton" aria-hidden="true" />
+
+  if (!isAuthenticated) return (
+    <NavLink className="nav-cta" to="/signin" onClick={onNavigate}>Sign in <ArrowUpRight size={16} aria-hidden="true" /></NavLink>
+  )
+
+  return (
+    <>
+      <span className="account-chip" title={learner?.email}>
+        <CircleUserRound size={15} aria-hidden="true" />
+        <span className="account-email">{learner?.email}</span>
+      </span>
+      <button
+        type="button"
+        className="nav-link sign-out-button"
+        onClick={() => { onNavigate(); signOut().catch(() => undefined) }}
+      >
+        Sign out <LogOut size={14} aria-hidden="true" />
+      </button>
+    </>
+  )
+}
+
 function HeaderNavigation() {
   const [menuOpen, setMenuOpen] = useState(false)
+  const closeMenu = () => setMenuOpen(false)
   return (
     <>
       <button
@@ -31,11 +64,24 @@ function HeaderNavigation() {
         {menuOpen ? <X size={21} aria-hidden="true" /> : <Menu size={21} aria-hidden="true" />}
       </button>
       <nav id="primary-navigation" className={`primary-navigation${menuOpen ? ' is-open' : ''}`} aria-label="Main navigation">
-        <NavLink to="/courses" onClick={() => setMenuOpen(false)} className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>Courses</NavLink>
-        <a className="nav-link" href="/#approach" onClick={() => setMenuOpen(false)}>How we teach</a>
-        <NavLink to="/contact" onClick={() => setMenuOpen(false)} className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>Contact</NavLink>
-        <NavLink className="nav-cta" to="/courses" onClick={() => setMenuOpen(false)}>Explore courses <ArrowUpRight size={16} aria-hidden="true" /></NavLink>
+        <NavLink to="/courses" onClick={closeMenu} className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>Courses</NavLink>
+        <a className="nav-link" href="/#approach" onClick={closeMenu}>How we teach</a>
+        <NavLink to="/contact" onClick={closeMenu} className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>Contact</NavLink>
+        <AccountNavigation onNavigate={closeMenu} />
       </nav>
+    </>
+  )
+}
+
+function FooterAccountLinks() {
+  const { isAuthenticated, registration } = useAuth()
+  if (isAuthenticated) return <Link to="/courses">My lessons</Link>
+  return (
+    <>
+      <Link to="/signin">Sign in</Link>
+      {registration === 'open'
+        ? <Link to="/signup">Create account</Link>
+        : <Link to="/contact">Request access</Link>}
     </>
   )
 }
@@ -85,6 +131,7 @@ export function SiteLayout() {
               <span className="footer-label">Explore</span>
               <Link to="/courses">All courses</Link>
               <Link to="/contact">Contact</Link>
+              <FooterAccountLinks />
             </div>
             <div>
               <span className="footer-label">Follow</span>

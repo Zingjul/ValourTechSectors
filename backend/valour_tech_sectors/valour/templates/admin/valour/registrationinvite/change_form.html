@@ -1,0 +1,21 @@
+{% extends "admin/change_form.html" %}
+
+{% block object-tools-items %}
+<li><a href="{% url 'admin:valour_registrationinvite_generate' %}" class="addlink">Generate another link</a></li>
+{{ block.super }}
+{% endblock %}
+
+{% block form_top %}
+{% if invite_url %}
+<div class="invite-link-box{% if not invite_available %} is-spent{% endif %}">
+  <h2>Send this link</h2>
+  <input class="invite-link-url" id="invite-link-url" type="text" readonly value="{{ invite_url }}"
+         aria-describedby="invite-link-help" spellcheck="false">
+  <div class="invite-link-actions">
+    <a class="button" href="mailto:?subject=Your%20ValourTech%20Sectors%20invitation&amp;body={{ invite_url|urlencode }}">Open in email</a>
+    <a class="button" href="https://wa.me/?text={{ invite_url|urlencode }}" rel="noreferrer">Share on WhatsApp</a>
+  </div>
+  <p id="invite-link-help">{{ invite_help }}</p>
+</div>
+{% endif %}
+{% endblock %}

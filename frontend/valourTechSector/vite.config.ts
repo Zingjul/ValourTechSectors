@@ -7,8 +7,13 @@ export default defineConfig(({ mode }) => {
   // Server-side config only. No credentials are injected into the browser.
   const env = { ...loadEnv(mode, repositoryRoot, ''), ...process.env }
   const djangoTarget = env.DJANGO_PROXY_TARGET || 'http://127.0.0.1:8000'
+  // changeOrigin stays off so Django sees the host the browser actually used,
+  // exactly as it does behind Render. Absolute URLs Django builds — the
+  // invitation links staff copy out of the admin — then match the origin being
+  // browsed, and a hostname missing from DJANGO_ALLOWED_HOSTS shows up here
+  // rather than only in production.
   const proxy = Object.fromEntries(
-    ['/api', '/admin', '/static/admin', '/media'].map((path) => [path, { target: djangoTarget, changeOrigin: true }]),
+    ['/api', '/admin', '/static/admin', '/media'].map((path) => [path, { target: djangoTarget }]),
   )
 
   return {

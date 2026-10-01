@@ -1,11 +1,11 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, Search, SlidersHorizontal } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import { getCourses, type CatalogResponse } from '../api'
+import { getCourses, isSignInRequired, signInRequiredPayload, type CatalogResponse, type SignInRequiredPayload } from '../api'
 import { CourseCard } from '../components/CourseCard'
-import { EmptyCourses, ErrorState, LoadingState } from '../components/States'
+import { EmptyCourses, ErrorState, LoadingState, SignInNotice } from '../components/States'
 
-type CatalogState = { key: string; data?: CatalogResponse; error?: string }
+type CatalogState = { key: string; data?: CatalogResponse; error?: string; signIn?: SignInRequiredPayload }
 
 export function CoursesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -16,13 +16,18 @@ export function CoursesPage() {
   const isLoading = catalogState.key !== filterKey
   const catalog = isLoading ? undefined : catalogState.data
   const error = isLoading ? '' : catalogState.error || ''
+  const signIn = isLoading ? undefined : catalogState.signIn
 
   useEffect(() => {
     let active = true
     const controller = new AbortController()
     getCourses(new URLSearchParams(filterKey), { signal: controller.signal })
       .then((data) => { if (active) setCatalogState({ key: filterKey, data }) })
-      .catch((reason: Error) => { if (active) setCatalogState({ key: filterKey, error: reason.message }) })
+      .catch((reason: Error) => {
+        if (!active) return
+        if (isSignInRequired(reason)) setCatalogState({ key: filterKey, signIn: signInRequiredPayload(reason) ?? undefined })
+        else setCatalogState({ key: filterKey, error: reason.message })
+      })
     return () => { active = false; controller.abort() }
   }, [filterKey])
 
@@ -81,7 +86,7 @@ export function CoursesPage() {
           <span>BEGINNER TO ADVANCED</span>
         </div>
 
-        {error ? <ErrorState message={error} /> : isLoading ? <LoadingState label="Finding courses…" /> : catalog?.count ? (
+        {signIn ? <SignInNotice message={signIn.message} next="/courses" /> : error ? <ErrorState message={error} /> : isLoading ? <LoadingState label="Finding courses…" /> : catalog?.count ? (
           <>
             <div className="course-grid">
               {catalog.results.map((course, index) => <CourseCard key={course.id} course={course} index={index} />)}

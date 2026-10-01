@@ -29,7 +29,9 @@ def frontend(request, *, status=200):
 @require_safe
 def robots(request):
     return HttpResponse(
-        "User-agent: *\nAllow: /\nDisallow: /admin/\nDisallow: /api/\nDisallow: /media/\n",
+        # The sign-in and sign-up pages are for people, not for search results.
+        "User-agent: *\nAllow: /\nDisallow: /admin/\nDisallow: /api/\nDisallow: /media/\n"
+        "Disallow: /signin\nDisallow: /signup\n",
         content_type="text/plain",
     )
 

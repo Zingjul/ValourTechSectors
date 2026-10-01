@@ -20,7 +20,7 @@ The first production database is intentionally **empty**. There is no automatic 
 1. Create a **new production Supabase project**. Store its database password in your password manager. Enable SSL enforcement in the project database settings.
 2. Open **Connect** in the Supabase project and copy the **Session pooler** connection string (port `5432`). Render's IPv4 egress can use this mode; use the URI supplied for your project rather than constructing a pooler hostname. Keep its password URL-encoded if it contains characters such as `@`, `:`, `/`, `#`, `?`, or `%`. Leave `sslmode=require` on the URI.
 3. The private value for Render is named `DATABASE_URL`. Use the Supabase **database password**, not a Supabase browser/anon key. Do not put the connection URI in source control. Supabase explains how to select a connection method and retrieve its exact string in [Connect to Postgres](https://supabase.com/docs/guides/database/connecting-to-postgres).
-4. Django's first deploy applies the committed migrations, including row-level security (RLS) on the Django/admin tables in the exposed `public` schema. Django connects as the database owner; browser-facing Supabase `anon`/`authenticated` Data API roles receive no table policies. **Do not add an unrestricted Supabase RLS policy** to these tables. Use the Django API/admin as the application access path and review the Supabase Security Advisor after deployment.
+4. Django's first deploy applies the committed migrations, including row-level security (RLS) on the Django/admin tables and on the learner and invitation-link tables in the exposed `public` schema. Django connects as the database owner; browser-facing Supabase `anon`/`authenticated` Data API roles receive no table policies. **Do not add an unrestricted Supabase RLS policy** to these tables. Use the Django API/admin as the application access path and review the Supabase Security Advisor after deployment.
 
 ### File storage
 
@@ -75,9 +75,10 @@ The GitHub Actions workflows run backend/Postgres tests, frontend tests/lint/bui
 
    Use the resulting value for `DJANGO_SECRET_KEY`. Do not reuse the development key or any project's password.
 4. Add the Supabase values from step 2. `DATABASE_URL` must be the project’s Session pooler URI; storage values must be from that same Supabase project. Keep `DJANGO_DEBUG=false`, `DJANGO_SECURE_SSL_REDIRECT=true`, and leave private signed URLs short-lived.
-5. For a custom domain, set `DJANGO_ALLOWED_HOSTS` to the exact hostname(s), comma-separated, with **no scheme, wildcard, or port**. Set `DJANGO_CSRF_TRUSTED_ORIGINS` to the matching exact HTTPS origins, comma-separated (for example, `https://learn.example.com,https://www.learn.example.com`). The Render-generated `your-service.onrender.com` hostname is allowed automatically; a custom hostname is not. If you use only the Render-generated domain initially, you can leave both custom-domain variables unset.
-6. Trigger **Save, rebuild, and deploy** after saving required secrets. The sequence is build image → run Django deployment checks → apply Postgres migrations → upload/read/delete a storage probe and verify the bucket is private → start Gunicorn → pass the database-backed readiness check. A failed pre-deploy check, migration, storage verification, or unavailable database blocks a healthy cutover. Render runs the pre-deploy command separately and documents that feature as paid-service-only. [Render Blueprints](https://render.com/docs/blueprint-spec) · [pre-deploy commands](https://render.com/docs/deploys#pre-deploy-command).
-7. Wait for a successful deployment and a passing Render health check. If configuration is rejected, inspect the deploy logs **without copying secret values** into a ticket or screenshot.
+5. Review the learner account settings. `LEARNER_REGISTRATION=invite` (the Blueprint default) means nobody can register on their own: `/signup` is linked from nowhere and only accepts a single-use link generated in `/admin/`. Set it to `open` if you ever want public sign-up back. `LEARNER_CONTENT_ACCESS=lessons` keeps the home page, catalogue, course outlines, and contact details public, and asks for a sign-in before lesson notes, videos, and downloads; `open` keeps the whole site public while accounts are only a record of who joined, and `everything` also closes the catalogue. `LEARNER_INVITE_VALID_DAYS` (14; `0` means links never expire on their own), `LEARNER_PASSWORD_MIN_LENGTH`, `LEARNER_LOGIN_FAILURE_LIMIT`, `LEARNER_LOGIN_LOCKOUT_MINUTES`, and `LEARNER_SESSION_REMEMBER_DAYS` are safe to leave as they are. Changing any of them needs a redeploy, not a code change.
+6. For a custom domain, set `DJANGO_ALLOWED_HOSTS` to the exact hostname(s), comma-separated, with **no scheme, wildcard, or port**. Set `DJANGO_CSRF_TRUSTED_ORIGINS` to the matching exact HTTPS origins, comma-separated (for example, `https://learn.example.com,https://www.learn.example.com`). The Render-generated `your-service.onrender.com` hostname is allowed automatically; a custom hostname is not. If you use only the Render-generated domain initially, you can leave both custom-domain variables unset.
+7. Trigger **Save, rebuild, and deploy** after saving required secrets. The sequence is build image → run Django deployment checks → apply Postgres migrations → upload/read/delete a storage probe and verify the bucket is private → start Gunicorn → pass the database-backed readiness check. A failed pre-deploy check, migration, storage verification, or unavailable database blocks a healthy cutover. Render runs the pre-deploy command separately and documents that feature as paid-service-only. [Render Blueprints](https://render.com/docs/blueprint-spec) · [pre-deploy commands](https://render.com/docs/deploys#pre-deploy-command).
+8. Wait for a successful deployment and a passing Render health check. If configuration is rejected, inspect the deploy logs **without copying secret values** into a ticket or screenshot.
 
 ## 5. Create the staff login and verify storage on the deployed service
 
@@ -102,7 +103,16 @@ To reset an administrator password from the interactive shell:
 python backend/valour_tech_sectors/manage.py changepassword your_admin_username
 ```
 
-Use unique staff accounts and long unique passwords; password rules require at least 12 characters. Open `https://YOUR-RENDER-HOST/admin/`, sign in, then enter the same HTTPS host in a second tab to confirm secure staff cookies, admin static files, and logout/login behavior. Never turn off CSRF to fix a login error; verify HTTPS, the exact allowed host/origin, and Render's `X-Forwarded-Proto` first.
+Use unique staff accounts and long unique passwords; password rules require at least 12 characters. Open `https://YOUR-RENDER-HOST/admin/`, sign in, then enter the same HTTPS host in a second tab to confirm secure staff cookies, admin static files, and logout/login behavior.
+
+### Handing out access
+
+Learners cannot register by themselves. In `/admin/` → **Registration invites**, choose **Generate invitation link**: the link appears at the top of the page ready to copy, with shortcuts to open it in email or share it on WhatsApp.
+
+1. Check the host in that link is your real domain. Django builds it from the request it received, so a wrong hostname here means `DJANGO_ALLOWED_HOSTS` or the proxy's forwarded headers need attention — fix that before sending links out.
+2. Add a private note (for example, "Ada — WhatsApp, October cohort"). Notes stay in the admin and never appear on the site or in an API response.
+3. Send the link privately. Each one registers a single person and then shows as **Used** with that learner's email; a forwarded link cannot admit anyone else.
+4. Use **Revoke selected unused links** when a link should stop working, and **Give selected unused links the full validity again** when one has expired before the person used it. Never turn off CSRF to fix a login error; verify HTTPS, the exact allowed host/origin, and Render's `X-Forwarded-Proto` first.
 
 ## 6. Attach the real domain and make it public
 
@@ -115,6 +125,11 @@ Use unique staff accounts and long unique passwords; password rules require at l
    - A made-up `/api/v1/...` path returns JSON `404`, not the React HTML page.
    - Unknown learner URLs return a real HTTP `404` with a helpful page.
    - A locked/unpublished lesson or file cannot disclose lesson text, links, or a signed URL.
+   - `/signup` on its own explains that registration is by invitation and shows no form. The header and footer offer sign-in and a way to request access, not a sign-up link.
+   - Generating a link in the admin and opening it registers that person: the header shows their email, the lesson opens, and a download works. After signing out, the same lesson shows a sign-in prompt and its Network response contains no lesson text.
+   - Re-opening the same link says it has already been used, and the admin lists it as **Used** against that learner.
+   - Signing back in with that password works, a wrong password is refused, and repeated failures eventually lock only that one email address.
+   - Clicking a download link after the session ends lands on the sign-in page and returns to the lesson afterwards.
    - After enabling storage in the admin, an open sample file redirects to a short-lived signed URL. An unlisted private-bucket URL fails without a signature.
    - HTTPS admin login works; HTTP is redirected to HTTPS; no mixed-content, CSRF, JavaScript console, or missing static chunk errors appear.
 4. Check the one-hour HSTS default after HTTPS is stable. Then consider setting `DJANGO_SECURE_HSTS_SECONDS=31536000` (one year). Only set `DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS=true` if **every** affected subdomain supports HTTPS. Leave preload false unless you deliberately enroll the whole domain in browser preload lists; HSTS can make a misconfigured domain inaccessible for its max-age.
@@ -122,7 +137,7 @@ Use unique staff accounts and long unique passwords; password rules require at l
 
 ## 7. Add the real courses before sharing the link
 
-1. Create the real course catalog, sections, lessons, safety notices, video links, and contact/profile data in `/admin/`. There is no dummy seed data.
+1. Create the real course catalog, sections, lessons, safety notices, video links, and contact/profile data in `/admin/`. There is no dummy seed data. Registrations appear under **Learners** (with the link that admitted each one), which is also where a forgotten learner password is reset, because no email provider is configured yet.
 2. Leave courses/sections/lessons unpublished until the copy and links have been reviewed. Preview draft content in the admin, publish the course, then validate it on the public site.
 3. Upload an intentionally harmless sample PDF and DOCX in a draft lesson. Test validation, downloads, filename, and signed link expiry. Do not upload confidential or copyrighted material without authorization.
 4. Review every course/section/lesson/material publication and lock flag. Remember that a 403 lock notice is visible to learners; lock state hides private content and the file signer rejects access at every ancestor level.
@@ -134,6 +149,7 @@ Use unique staff accounts and long unique passwords; password rules require at l
 - Enable provider deploy/error notifications. Review Render request/deploy logs and service health after each release; check Render usage/spend alerts and database/storage quotas.
 - Monitor `/api/v1/ready/` with an external uptime checker that supports HTTP checks. It is a readiness probe, not a traffic-generation/wake-up workaround for a free/sleeping plan.
 - Decide and test a database backup/restore process before launch. Supabase's paid plans have scheduled database backups, but **database backups do not include the bytes in Storage buckets**. Keep a separate, encrypted off-provider copy of important uploaded course files and periodically test restoring both the database and its objects. [Supabase backup contents/retention](https://supabase.com/docs/guides/platform/backups).
+- Review **Registration invites** and **Learners** occasionally. While registration is invitation-only there is no open sign-up to abuse, so no rate limit is needed; the risk moves to the links themselves. Send them privately rather than posting them publicly, keep the default expiry, revoke anything that leaked, and deactivate a learner in the admin if an account should stop working. Sign-in stays rate limited per email address. If you switch `LEARNER_REGISTRATION` to `open`, put a CDN/WAF rate limit in front of the domain first.
 - Keep production database and Storage project credentials in Render secrets only. Rotate the Django key, database password, and powerful S3 key through a planned deploy if access is suspected to be exposed.
 - Review Dependabot pull requests and GitHub Actions. Deploy only when the checks pass. Test migrations/backups with staging data first. Do not use `--fake` migrations or edit live database tables by hand.
 - Increase service/database capacity when real monitoring/load tests demonstrate a need; run a load test against a non-production environment before campaigns or high-traffic announcements.
@@ -151,6 +167,11 @@ Use unique staff accounts and long unique passwords; password rules require at l
 | Storage upload fails | Recheck the private bucket name, allowed max size, S3 protocol, region, project URL, generated S3 key/secret, and delete/write permissions. Run `verify_storage` in Render Shell. Do not switch the bucket public to fix a signing problem. |
 | A link shows a stale access error | Signed download URLs intentionally expire after five minutes. Reload the lesson to obtain a new authorized link. Changing a lock/publish flag cannot revoke a URL already signed until its short expiry; contact Supabase support for immediate project-wide URL signing-key incidents. |
 | The admin username is temporarily locked | Wait for the 15-minute cool-off or use `axes_reset_username` from an authorized Render Shell. Do not disable login protections. |
+| A learner says sign-in does not work | Check the address is spelled as registered (accounts are stored lowercased), then open **Learners** in `/admin/`: the Access column shows a lockout or a deactivated account, and the **Unlock sign-in** action clears a lockout at once. |
+| A learner says their invitation link does not work | The page tells them why. Check the link in **Registration invites**: **Used** means it already registered someone (possibly them — look under **Learners**), **Expired** can be fixed with the extend action, **Revoked** was withdrawn on purpose. Otherwise generate a new link. |
+| A generated invitation link has the wrong hostname | Django builds the absolute link from the request it received. Confirm `DJANGO_ALLOWED_HOSTS` and `DJANGO_CSRF_TRUSTED_ORIGINS` list the real domain and that Render forwards `X-Forwarded-Proto`; then generate the link again while signed in on that domain. |
+| A learner forgot their password | Self-service reset needs email delivery, which is not configured. Open the learner in `/admin/`, choose **Set a new sign-in password**, and share it through a private channel. |
+| Lesson content opens without a sign-in | Confirm `LEARNER_CONTENT_ACCESS` is `lessons` or `everything` in Render's Environment page, and that the service redeployed after the change. |
 
 ## Configuration reference files
 
