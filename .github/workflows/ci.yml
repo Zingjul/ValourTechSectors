@@ -93,30 +93,30 @@ jobs:
       - name: Smoke-test the built site, migrations, readiness, and admin assets
         run: |
           mkdir -p /tmp/valour-ci-certs
-          openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/valour-ci-certs/server.key \\
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/valour-ci-certs/server.key \
             -out /tmp/valour-ci-certs/server.crt -subj /CN=localhost -days 1
           chmod 600 /tmp/valour-ci-certs/server.key
-          docker run -d --name valour-postgres-ci --network host \\
-            -e POSTGRES_USER=valour -e POSTGRES_PASSWORD=ci-only-password -e POSTGRES_DB=valour_ci \\
-            -v /tmp/valour-ci-certs:/certs:ro \\
-            --entrypoint /bin/sh postgres:16-alpine -c \\
+          docker run -d --name valour-postgres-ci --network host \
+            -e POSTGRES_USER=valour -e POSTGRES_PASSWORD=ci-only-password -e POSTGRES_DB=valour_ci \
+            -v /tmp/valour-ci-certs:/certs:ro \
+            --entrypoint /bin/sh postgres:16-alpine -c \
             'cp /certs/server.crt /tmp/server.crt && cp /certs/server.key /tmp/server.key && chown postgres:postgres /tmp/server.key && chmod 600 /tmp/server.key && exec /usr/local/bin/docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key -c listen_addresses=127.0.0.1 -p 5432'
           trap 'docker logs valourtech-ci 2>/dev/null || true; docker rm -f valourtech-ci valour-postgres-ci 2>/dev/null || true; rm -rf /tmp/valour-ci-certs' EXIT
           for attempt in {1..30}; do
             docker exec valour-postgres-ci pg_isready -U valour -d valour_ci && break
             sleep 1
           done
-          docker run -d --name valourtech-ci --network host \\
-            -e PORT=10000 \\
-            -e DJANGO_DEBUG=false \\
-            -e DJANGO_SECRET_KEY=ci-only-not-for-production-django-test-secret-key-123456789 \\
-            -e DJANGO_ALLOWED_HOSTS=localhost \\
-            -e DATABASE_URL='postgres://valour:ci-only-password@localhost:5432/valour_ci?sslmode=require' \\
-            -e SUPABASE_URL=https://example.supabase.co \\
-            -e SUPABASE_STORAGE_BUCKET=course-materials \\
-            -e SUPABASE_S3_ACCESS_KEY_ID=ci-only-access-key \\
-            -e SUPABASE_S3_SECRET_ACCESS_KEY=ci-only-secret-key \\
-            -e SUPABASE_S3_REGION=eu-central-1 \\
+          docker run -d --name valourtech-ci --network host \
+            -e PORT=10000 \
+            -e DJANGO_DEBUG=false \
+            -e DJANGO_SECRET_KEY=ci-only-not-for-production-django-test-secret-key-123456789 \
+            -e DJANGO_ALLOWED_HOSTS=localhost \
+            -e DATABASE_URL='postgres://valour:ci-only-password@localhost:5432/valour_ci?sslmode=require' \
+            -e SUPABASE_URL=https://example.supabase.co \
+            -e SUPABASE_STORAGE_BUCKET=course-materials \
+            -e SUPABASE_S3_ACCESS_KEY_ID=ci-only-access-key \
+            -e SUPABASE_S3_SECRET_ACCESS_KEY=ci-only-secret-key \
+            -e SUPABASE_S3_REGION=eu-central-1 \
             valourtech:ci
           curl --fail --retry 20 --retry-delay 1 --retry-connrefused http://localhost:10000/api/v1/health/
           docker exec valourtech-ci python backend/valour_tech_sectors/manage.py check --deploy --fail-level ERROR
