@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend / PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: valour
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: valour_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U valour -d valour_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DJANGO_DEBUG: "true"
+      DJANGO_SECRET_KEY: ci-only-not-for-production-django-test-secret-key-123456789
+      DATABASE_URL: postgres://valour:ci-only-password@127.0.0.1:5432/valour_ci
+      SUPABASE_URL: ""
+      SUPABASE_STORAGE_BUCKET: ""
+      SUPABASE_S3_ACCESS_KEY_ID: ""
+      SUPABASE_S3_SECRET_ACCESS_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - run: python backend/valour_tech_sectors/manage.py check
+      - run: python backend/valour_tech_sectors/manage.py makemigrations --check --dry-run
+      - run: python backend/valour_tech_sectors/manage.py test valour --verbosity 2
+      - name: Production configuration checks (no live credentials)
+        env:
+          DJANGO_DEBUG: "false"
+          DJANGO_ALLOWED_HOSTS: learn.example.com
+          DATABASE_URL: postgres://valour:ci-only-password@127.0.0.1:5432/valour_ci
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_STORAGE_BUCKET: course-materials
+          SUPABASE_S3_ACCESS_KEY_ID: ci-only-access-key
+          SUPABASE_S3_SECRET_ACCESS_KEY: ci-only-secret-key
+          SUPABASE_S3_REGION: eu-central-1
+        run: python backend/valour_tech_sectors/manage.py check --deploy --fail-level ERROR
+      - name: Audit Python dependencies
+        run: |
+          python -m venv /tmp/audit-env
+          /tmp/audit-env/bin/pip install pip-audit
+          /tmp/audit-env/bin/pip-audit -r backend/requirements.txt --no-deps --disable-pip
+
+  frontend:
+    name: Frontend / tests, lint, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/valourTechSector
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/valourTechSector/.node-version
+          cache: npm
+          cache-dependency-path: frontend/valourTechSector/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm audit
+
+  container:
+    name: Production image / smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build without production secrets
+        run: docker build -t valourtech:ci .
+      - name: Smoke-test the built site, migrations, readiness, and admin assets
+        run: |
+          mkdir -p /tmp/valour-ci-certs
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/valour-ci-certs/server.key \\
+            -out /tmp/valour-ci-certs/server.crt -subj /CN=localhost -days 1
+          chmod 600 /tmp/valour-ci-certs/server.key
+          docker run -d --name valour-postgres-ci --network host \\
+            -e POSTGRES_USER=valour -e POSTGRES_PASSWORD=ci-only-password -e POSTGRES_DB=valour_ci \\
+            -v /tmp/valour-ci-certs:/certs:ro \\
+            --entrypoint /bin/sh postgres:16-alpine -c \\
+            'cp /certs/server.crt /tmp/server.crt && cp /certs/server.key /tmp/server.key && chown postgres:postgres /tmp/server.key && chmod 600 /tmp/server.key && exec /usr/local/bin/docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key -c listen_addresses=127.0.0.1 -p 5432'
+          trap 'docker logs valourtech-ci 2>/dev/null || true; docker rm -f valourtech-ci valour-postgres-ci 2>/dev/null || true; rm -rf /tmp/valour-ci-certs' EXIT
+          for attempt in {1..30}; do
+            docker exec valour-postgres-ci pg_isready -U valour -d valour_ci && break
+            sleep 1
+          done
+          docker run -d --name valourtech-ci --network host \\
+            -e PORT=10000 \\
+            -e DJANGO_DEBUG=false \\
+            -e DJANGO_SECRET_KEY=ci-only-not-for-production-django-test-secret-key-123456789 \\
+            -e DJANGO_ALLOWED_HOSTS=localhost \\
+            -e DATABASE_URL='postgres://valour:ci-only-password@localhost:5432/valour_ci?sslmode=require' \\
+            -e SUPABASE_URL=https://example.supabase.co \\
+            -e SUPABASE_STORAGE_BUCKET=course-materials \\
+            -e SUPABASE_S3_ACCESS_KEY_ID=ci-only-access-key \\
+            -e SUPABASE_S3_SECRET_ACCESS_KEY=ci-only-secret-key \\
+            -e SUPABASE_S3_REGION=eu-central-1 \\
+            valourtech:ci
+          curl --fail --retry 20 --retry-delay 1 --retry-connrefused http://localhost:10000/api/v1/health/
+          docker exec valourtech-ci python backend/valour_tech_sectors/manage.py check --deploy --fail-level ERROR
+          docker exec valourtech-ci python backend/valour_tech_sectors/manage.py migrate --noinput
+          curl --fail --retry 20 --retry-delay 1 --retry-connrefused http://localhost:10000/api/v1/ready/
+          curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/courses -o /tmp/site.html
+          grep -q '/static/site/assets/' /tmp/site.html
+          asset=$(grep -o '/static/site/assets/[^" ]*\.js' /tmp/site.html | head -1)
+          curl --fail -H 'X-Forwarded-Proto: https' "http://localhost:10000$asset" -o /dev/null
+          curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/static/admin/css/base.css -o /dev/null
+          status=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-Proto: https' http://localhost:10000/api/v1/missing/)
+          test "$status" = 404

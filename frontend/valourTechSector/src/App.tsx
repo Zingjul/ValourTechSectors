@@ -1,12 +1,12 @@
-import { useEffect } from 'react'
+import { lazy, useEffect } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { Link, Route, Routes, useLocation } from 'react-router-dom'
 import { SiteLayout } from './components/SiteLayout'
-import { ContactPage } from './pages/ContactPage'
-import { CoursePage } from './pages/CoursePage'
-import { CoursesPage } from './pages/CoursesPage'
-import { HomePage } from './pages/HomePage'
-import { LessonPage } from './pages/LessonPage'
+const ContactPage = lazy(() => import('./pages/ContactPage').then((module) => ({ default: module.ContactPage })))
+const CoursePage = lazy(() => import('./pages/CoursePage').then((module) => ({ default: module.CoursePage })))
+const CoursesPage = lazy(() => import('./pages/CoursesPage').then((module) => ({ default: module.CoursesPage })))
+const HomePage = lazy(() => import('./pages/HomePage').then((module) => ({ default: module.HomePage })))
+const LessonPage = lazy(() => import('./pages/LessonPage').then((module) => ({ default: module.LessonPage })))
 
 function RouteTitle() {
   const location = useLocation()

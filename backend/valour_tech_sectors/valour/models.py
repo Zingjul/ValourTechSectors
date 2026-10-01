@@ -7,12 +7,12 @@ from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator, MinValueValidator
 from django.db import models
 
-MAX_MATERIAL_SIZE_BYTES = settings.MAX_COURSE_FILE_SIZE_MB * 1024 * 1024
+from .validators import validate_material_content
 
 
 def validate_material_size(uploaded_file):
-    if uploaded_file.size > MAX_MATERIAL_SIZE_BYTES:
-        raise ValidationError("Files must be 25 MB or smaller.")
+    if uploaded_file.size > settings.MAX_COURSE_FILE_SIZE_MB * 1024 * 1024:
+        raise ValidationError(f"Files must be {settings.MAX_COURSE_FILE_SIZE_MB} MB or smaller.")
 
 
 def material_upload_path(instance, filename):
@@ -173,7 +173,11 @@ class Material(models.Model):
     kind = models.CharField(max_length=12, choices=Kind.choices)
     file = models.FileField(
         upload_to=material_upload_path,
-        validators=[FileExtensionValidator(allowed_extensions=("pdf", "doc", "docx")), validate_material_size],
+        validators=[
+            FileExtensionValidator(allowed_extensions=("pdf", "doc", "docx")),
+            validate_material_size,
+            validate_material_content,
+        ],
     )
     ordering = models.PositiveIntegerField(default=0)
     is_published = models.BooleanField(default=True, db_index=True)

@@ -12,10 +12,11 @@ export function HomePage() {
 
   useEffect(() => {
     let active = true
-    getCourses(new URLSearchParams({ page: '1' }))
+    const controller = new AbortController()
+    getCourses(new URLSearchParams({ page: '1' }), { signal: controller.signal })
       .then((data) => { if (active) setCatalog(data) })
       .catch((reason: Error) => { if (active) setError(reason.message) })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [])
 
   return (

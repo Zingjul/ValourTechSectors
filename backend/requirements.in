@@ -1,0 +1,9 @@
+# Direct runtime dependencies. requirements.txt pins the tested transitive set.
+Django>=5.2,<5.3
+dj-database-url>=2.3,<3
+psycopg[binary]>=3.3,<4
+python-dotenv>=1.2,<2
+django-storages[s3]>=1.14,<2
+gunicorn>=25.3,<26
+whitenoise[brotli]>=6.12,<7
+django-axes>=8.3,<9

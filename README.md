@@ -8,9 +8,13 @@ A public learning site for electronic components. Learners browse courses, notes
 - `backend/valour_tech_sectors` — Django application and API.
 - `docs/implementation-plan.md` — agreed scope and architecture.
 
-## Current development setup
+## Development and production
 
-The React app is configured with Vite. Django uses SQLite locally unless `DATABASE_URL` points to Supabase Postgres. Supabase Storage credentials are server-side only. See `.env.example` and the backend setup notes in `backend/README.md`. In production, serve React and proxy the API/admin routes through the same origin so the browser can use relative API paths.
+For local development, React/Vite proxies same-origin `/api`, `/admin`, `/static/admin`, and `/media` requests to Django. Django uses SQLite and local media only when developing; production explicitly requires PostgreSQL and private Supabase Storage. Storage/Postgres credentials stay server-side; the browser uses relative API paths and does not receive Supabase credentials.
+
+**Production launch:** this repository includes a Render Blueprint (`render.yaml`), a multi-stage production Dockerfile, PostgreSQL/React CI checks, and secure-by-default production settings. Read [`docs/production-guide.md`](docs/production-guide.md) before provisioning Render/Supabase or adding live secrets. This checkout does not create cloud resources, set your secrets/domain, or publish course content on your behalf.
+
+Local setup: [`backend/README.md`](backend/README.md) and [`frontend/valourTechSector/README.md`](frontend/valourTechSector/README.md).
 
 ## Scope for the first release
 
