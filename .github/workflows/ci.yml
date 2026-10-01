@@ -118,10 +118,12 @@ jobs:
             -e SUPABASE_S3_SECRET_ACCESS_KEY=ci-only-secret-key \
             -e SUPABASE_S3_REGION=eu-central-1 \
             valourtech:ci
-          curl --fail --retry 20 --retry-delay 1 --retry-connrefused http://localhost:10000/api/v1/health/
-          docker exec valourtech-ci python backend/valour_tech_sectors/manage.py check --deploy --fail-level ERROR
-          docker exec valourtech-ci python backend/valour_tech_sectors/manage.py migrate --noinput
+          # No manual migrate here: the production entrypoint must prepare an
+          # empty database before Gunicorn opens its port, without a Render hook.
           curl --fail --retry 20 --retry-delay 1 --retry-connrefused http://localhost:10000/api/v1/ready/
+          curl --fail http://localhost:10000/api/v1/health/
+          docker exec valourtech-ci python backend/valour_tech_sectors/manage.py migrate --check
+          docker logs valourtech-ci 2>&1 | grep -q 'Applying valour.0006_registrationinvite'
           curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/courses -o /tmp/site.html
           grep -q '/static/site/assets/' /tmp/site.html
           curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/signin -o /tmp/signin.html

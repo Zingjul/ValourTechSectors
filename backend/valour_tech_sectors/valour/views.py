@@ -12,6 +12,7 @@ from django.utils.cache import patch_vary_headers
 from django.views.decorators.http import require_safe
 
 from .auth_backends import can_open_content
+from .db_health import probe_schema
 from .models import Course, Lesson, Material, Section, SiteProfile, SocialLink, VideoLink
 
 logger = logging.getLogger(__name__)
@@ -68,17 +69,15 @@ def health(request):
 
 @require_safe
 def ready(request):
-    """Readiness depends on Postgres and the built frontend, not external video providers."""
+    """Require the deployed DB schema and frontend, not just a live connection."""
     if not settings.DEBUG and not (settings.FRONTEND_DIST / "index.html").is_file():
         logger.error("Readiness frontend build is missing.")
         return json_response({"status": "unavailable"}, status=503)
     try:
-        with connections["default"].cursor() as cursor:
-            cursor.execute("SELECT 1")
-            cursor.fetchone()
+        probe_schema(connections["default"])
     except DatabaseError:
         # Connection errors may contain credentials; never return/log their text.
-        logger.error("Readiness database probe failed.")
+        logger.error("Readiness database/schema probe failed.")
         return json_response({"status": "unavailable"}, status=503)
     return json_response({"status": "ok"})
 

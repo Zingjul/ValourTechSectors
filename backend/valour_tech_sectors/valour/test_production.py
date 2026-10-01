@@ -44,8 +44,7 @@ class HealthTests(TestCase):
         self.assertEqual(response.json(), {"status": "ok"})
 
     def test_readiness_failure_does_not_leak_connection_details(self):
-        with patch("valour.views.connections") as connections:
-            connections["default"].cursor.side_effect = DatabaseError("password=do-not-leak")
+        with patch("valour.views.probe_schema", side_effect=DatabaseError("password=do-not-leak")):
             with self.assertLogs("valour.views", level="ERROR") as logs:
                 response = self.client.get(reverse("valour:ready"))
         self.assertEqual(response.status_code, 503)

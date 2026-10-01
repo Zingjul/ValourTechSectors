@@ -77,7 +77,7 @@ The GitHub Actions workflows run backend/Postgres tests, frontend tests/lint/bui
 4. Add the Supabase values from step 2. `DATABASE_URL` must be the project’s Session pooler URI; storage values must be from that same Supabase project. Keep `DJANGO_DEBUG=false`, `DJANGO_SECURE_SSL_REDIRECT=true`, and leave private signed URLs short-lived.
 5. Review the learner account settings. `LEARNER_REGISTRATION=invite` (the Blueprint default) means nobody can register on their own: `/signup` is linked from nowhere and only accepts a single-use link generated in `/admin/`. Set it to `open` if you ever want public sign-up back. `LEARNER_CONTENT_ACCESS=lessons` keeps the home page, catalogue, course outlines, and contact details public, and asks for a sign-in before lesson notes, videos, and downloads; `open` keeps the whole site public while accounts are only a record of who joined, and `everything` also closes the catalogue. `LEARNER_INVITE_VALID_DAYS` (14; `0` means links never expire on their own), `LEARNER_PASSWORD_MIN_LENGTH`, `LEARNER_LOGIN_FAILURE_LIMIT`, `LEARNER_LOGIN_LOCKOUT_MINUTES`, and `LEARNER_SESSION_REMEMBER_DAYS` are safe to leave as they are. Changing any of them needs a redeploy, not a code change.
 6. For a custom domain, set `DJANGO_ALLOWED_HOSTS` to the exact hostname(s), comma-separated, with **no scheme, wildcard, or port**. Set `DJANGO_CSRF_TRUSTED_ORIGINS` to the matching exact HTTPS origins, comma-separated (for example, `https://learn.example.com,https://www.learn.example.com`). The Render-generated `your-service.onrender.com` hostname is allowed automatically; a custom hostname is not. If you use only the Render-generated domain initially, you can leave both custom-domain variables unset.
-7. Trigger **Save, rebuild, and deploy** after saving required secrets. The sequence is build image → run Django deployment checks → apply Postgres migrations → upload/read/delete a storage probe and verify the bucket is private → start Gunicorn → pass the database-backed readiness check. A failed pre-deploy check, migration, storage verification, or unavailable database blocks a healthy cutover. Render runs the pre-deploy command separately and documents that feature as paid-service-only. [Render Blueprints](https://render.com/docs/blueprint-spec) · [pre-deploy commands](https://render.com/docs/deploys#pre-deploy-command).
+7. Trigger **Save, rebuild, and deploy** after saving required secrets. The sequence is build image → run Django deployment checks → apply Postgres migrations → upload/read/delete a storage probe and verify the bucket is private → start Gunicorn → pass the schema-aware readiness check. The image's entrypoint also runs deployment checks and `prepare_database` **before** starting Gunicorn, so migrations cannot be skipped by a manually created service without the Blueprint's pre-deploy hook. `prepare_database` applies only committed migrations, verifies managed tables/columns without reading any rows, and uses a PostgreSQL session advisory lock to serialize pre-deploy/startup migrations (waits up to 60 seconds for another deploy). Repeated starts are safe; migration or schema-check failures prevent web startup, and `DJANGO_DEBUG=true` is rejected. Keep using the Supabase **Session** pooler, not transaction pooling, so the lock stays on the same connection. The paid pre-deploy hook remains recommended: it catches failures before replacing the running service and also verifies private storage. Render runs it separately and documents that feature as paid-service-only. [Render Blueprints](https://render.com/docs/blueprint-spec) · [pre-deploy commands](https://render.com/docs/deploys#pre-deploy-command).
 8. Wait for a successful deployment and a passing Render health check. If configuration is rejected, inspect the deploy logs **without copying secret values** into a ticket or screenshot.
 
 ## 5. Create the staff login and verify storage on the deployed service
@@ -156,6 +156,29 @@ Learners cannot register by themselves. In `/admin/` → **Registration invites*
 - The built Docker image and local `.env` files are never the source of truth for uploaded documents. Production uploads are in Supabase Storage; database content is in Supabase Postgres.
 
 ## Troubleshooting
+
+### Missing database tables after a deploy
+
+`ProgrammingError: relation "valour_registrationinvite" does not exist` means the running code can reach PostgreSQL, but its schema is missing the invitation table. The table is already defined in committed migration `valour.0006_registrationinvite`; **do not generate a new migration, create the table by hand, reset the database, or use `--fake`**.
+
+In the affected **Render web service's Shell**, from `/app`, use the same configured `DATABASE_URL` as the web process:
+
+```bash
+python backend/valour_tech_sectors/manage.py showmigrations valour
+python backend/valour_tech_sectors/manage.py migrate --noinput
+python backend/valour_tech_sectors/manage.py showmigrations valour
+```
+
+The last output should include `[X] 0006_registrationinvite` (and `[X] 0005_learner`). Refresh `/admin/valour/registrationinvite/` and check `/api/v1/ready/`. Applying pending migrations preserves existing courses, staff accounts, and learners. If `0006` is not listed at all, the deployed image is old: deploy the commit containing it first. If it is **already marked `[X]` before migrating** but the table is still absent, stop and investigate the database/project, schema/search path, and migration history. `migrate` will not recreate a table whose migration was marked applied; resolve that discrepancy with a backup/staging copy rather than faking or deleting history on the live database.
+
+For future deploys:
+
+- Rebuild/deploy the updated Docker image and use its default command/entrypoint. In a manually created Render Docker service, clear any old **Docker Command** override unless needed; editing `render.yaml` alone does **not** update a service that is not managed by that Blueprint.
+- On paid services, set/sync **Pre-Deploy Command** to the checks → `prepare_database` → `verify_storage` command in [`render.yaml`](../render.yaml). Startup remains a fallback if that hook is absent, and the readiness probe now rejects missing tables or columns.
+- Set Render's **Health Check Path** to `/api/v1/ready/`, not the liveness-only `/api/v1/health/`.
+- Keep `DJANGO_DEBUG=false` in Render's Environment page and redeploy. A detailed Django traceback shown in the browser indicates debug mode is enabled; it must not be used in production. The updated production entrypoint refuses to start in that mode.
+
+### Other symptoms
 
 | Symptom | First checks |
 | --- | --- |
