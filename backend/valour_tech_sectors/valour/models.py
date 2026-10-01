@@ -1,13 +1,22 @@
+from datetime import timedelta
 from pathlib import PurePosixPath
 from urllib.parse import parse_qs, urlencode, urlparse
 from uuid import uuid4
 
 from django.conf import settings
+from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator, MinValueValidator
 from django.db import models
+from django.db.models import F
+from django.utils import timezone
 
-from .validators import validate_material_content
+from .validators import (
+    normalize_email,
+    normalize_phone_number,
+    validate_learner_phone,
+    validate_material_content,
+)
 
 
 def validate_material_size(uploaded_file):
@@ -251,3 +260,126 @@ class SocialLink(models.Model):
 
     def __str__(self):
         return self.label or self.get_platform_display()
+
+
+class LearnerManager(BaseUserManager):
+    """Learner accounts come from sign-up on the site; staff never invent them."""
+
+    use_in_migrations = True
+
+    def create_user(self, email, phone_number="", password=None, **extra_fields):
+        email = normalize_email(email)
+        if not email:
+            raise ValueError("A learner account needs an email address.")
+        extra_fields.setdefault("is_active", True)
+        learner = self.model(email=email, phone_number=normalize_phone_number(phone_number), **extra_fields)
+        learner.set_password(password)
+        learner.save(using=self._db)
+        return learner
+
+
+class Learner(AbstractBaseUser):
+    """A visitor who signed up to open lessons.
+
+    Learners are deliberately separate from the staff accounts in
+    ``django.contrib.auth``: they sign in with an email address, they can never
+    reach /admin/, and the record kept for the owner is the email address, the
+    phone number, and when they joined and last signed in.
+    """
+
+    email = models.EmailField(
+        max_length=254,
+        unique=True,
+        help_text="Stored lowercased; this is what the learner signs in with.",
+    )
+    phone_number = models.CharField(
+        max_length=32,
+        validators=[validate_learner_phone],
+        help_text="Contact number captured at sign-up, for example +234 803 123 4567.",
+    )
+    # AbstractBaseUser keeps is_active as a plain attribute; a real field lets
+    # staff deactivate a learner while keeping their record.
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Deactivated learners cannot sign in. The record is kept.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    # Failed sign-ins are counted per email address so a lockout survives across
+    # workers and deploys without storing visitor IP addresses.
+    failed_login_attempts = models.PositiveSmallIntegerField(default=0, editable=False)
+    locked_until = models.DateTimeField(null=True, blank=True, editable=False)
+
+    objects = LearnerManager()
+
+    USERNAME_FIELD = "email"
+    REQUIRED_FIELDS = ["phone_number"]
+
+    # Learners hold no Django permissions, so the admin and every permission
+    # check keep answering "no" for a learner session.
+    is_staff = False
+    is_superuser = False
+
+    class Meta:
+        ordering = ("-created_at", "email")
+        verbose_name = "learner"
+        verbose_name_plural = "learners"
+
+    def __str__(self):
+        return self.email
+
+    def clean(self):
+        super().clean()
+        self.email = normalize_email(self.email)
+        self.phone_number = normalize_phone_number(self.phone_number)
+
+    def has_perm(self, perm, obj=None):
+        return False
+
+    def has_perms(self, perm_list, obj=None):
+        return False
+
+    def has_module_perms(self, app_label):
+        return False
+
+    def get_full_name(self):
+        return self.email
+
+    def get_short_name(self):
+        return self.email
+
+    def is_locked_out(self):
+        return bool(self.locked_until and self.locked_until > timezone.now())
+
+    def lockout_seconds_remaining(self):
+        if not self.is_locked_out():
+            return 0
+        return max(1, int((self.locked_until - timezone.now()).total_seconds()))
+
+    def clear_expired_lockout(self):
+        """A finished cooldown starts counting again from the next failure."""
+        if not self.locked_until or self.is_locked_out():
+            return
+        self.failed_login_attempts = 0
+        self.locked_until = None
+        self.save(update_fields=["failed_login_attempts", "locked_until", "updated_at"])
+
+    def register_failed_attempt(self):
+        # The counter is incremented in the database so concurrent attempts from
+        # several workers cannot each read the same stale value.
+        Learner.objects.filter(pk=self.pk).update(
+            failed_login_attempts=F("failed_login_attempts") + 1,
+            updated_at=timezone.now(),
+        )
+        self.refresh_from_db(fields=["failed_login_attempts", "updated_at"])
+        if self.failed_login_attempts < settings.LEARNER_LOGIN_FAILURE_LIMIT:
+            return
+        self.locked_until = timezone.now() + timedelta(minutes=settings.LEARNER_LOGIN_LOCKOUT_MINUTES)
+        self.save(update_fields=["locked_until", "updated_at"])
+
+    def reset_failed_attempts(self):
+        if not self.failed_login_attempts and not self.locked_until:
+            return
+        self.failed_login_attempts = 0
+        self.locked_until = None
+        self.save(update_fields=["failed_login_attempts", "locked_until", "updated_at"])

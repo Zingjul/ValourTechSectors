@@ -14,16 +14,20 @@ class ApiResponseMiddleware:
         if response.status_code >= 400 and not response.get("Content-Type", "").startswith("application/json"):
             messages = {
                 400: "Invalid request.",
+                401: "Sign in to continue.",
                 403: "Access denied.",
                 404: "This resource was not found.",
-                405: "This endpoint only accepts GET and HEAD requests.",
                 429: "Too many requests. Please try again later.",
             }
             original = response
-            response = JsonResponse(
-                {"message": messages.get(original.status_code, "The learning service is temporarily unavailable.")},
-                status=original.status_code,
-            )
+            if original.status_code == 405:
+                # Read-only content endpoints and the POST-only sign-in endpoints
+                # need different advice, so take it from the Allow header.
+                allowed = original.get("Allow", "")
+                message = f"This endpoint accepts {allowed} requests only." if allowed else "This endpoint does not accept that request method."
+            else:
+                message = messages.get(original.status_code, "The learning service is temporarily unavailable.")
+            response = JsonResponse({"message": message}, status=original.status_code)
             for header in ("Allow", "Retry-After"):
                 if header in original:
                     response[header] = original[header]

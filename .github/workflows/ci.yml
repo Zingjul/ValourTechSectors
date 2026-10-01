@@ -124,6 +124,10 @@ jobs:
           curl --fail --retry 20 --retry-delay 1 --retry-connrefused http://localhost:10000/api/v1/ready/
           curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/courses -o /tmp/site.html
           grep -q '/static/site/assets/' /tmp/site.html
+          curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/signin -o /tmp/signin.html
+          curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/api/v1/auth/session/ | grep -q '"authenticated": false'
+          status=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-Proto: https' http://localhost:10000/api/v1/lessons/missing/)
+          test "$status" = 404
           asset=$(grep -o '/static/site/assets/[^" ]*\.js' /tmp/site.html | head -1)
           curl --fail -H 'X-Forwarded-Proto: https' "http://localhost:10000$asset" -o /dev/null
           curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/static/admin/css/base.css -o /dev/null

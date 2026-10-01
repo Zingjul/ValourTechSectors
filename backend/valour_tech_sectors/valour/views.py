@@ -1,5 +1,5 @@
 import logging
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from botocore.exceptions import BotoCoreError, ClientError
 from django.conf import settings
@@ -8,17 +8,57 @@ from django.db import DatabaseError, connections
 from django.db.models import Prefetch, Q
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
+from django.utils.cache import patch_vary_headers
 from django.views.decorators.http import require_safe
 
+from .auth_backends import can_open_content
 from .models import Course, Lesson, Material, Section, SiteProfile, SocialLink, VideoLink
 
 logger = logging.getLogger(__name__)
+
+SIGN_IN_PATH = "/signin"
+SIGN_IN_MESSAGE = "Sign in to open your lesson notes, videos, and downloads."
 
 
 def json_response(data, *, status=200):
     response = JsonResponse(data, status=status, json_dumps_params={"ensure_ascii": False})
     response["Cache-Control"] = "no-store"
     return response
+
+
+def content_response(data, *, status=200):
+    """Course and lesson payloads differ by sign-in state, so caches must vary."""
+    response = json_response(data, status=status)
+    patch_vary_headers(response, ("Cookie",))
+    return response
+
+
+def sign_in_needed(request, *, scope):
+    """True while this content stays closed to visitors who have not signed in.
+
+    ``LEARNER_CONTENT_ACCESS`` decides how much of the site an account opens:
+    ``lessons`` keeps the catalogue browsable, ``everything`` closes it too, and
+    ``open`` leaves the site public while accounts are only a record of visitors.
+    """
+    mode = settings.LEARNER_CONTENT_ACCESS
+    if mode == "open" or can_open_content(request):
+        return False
+    return mode == "everything" or scope == "lesson"
+
+
+def prefers_html(request):
+    """True for a browser navigation (a clicked link) rather than a fetch call."""
+    if request.headers.get("Sec-Fetch-Dest", "").lower() == "document":
+        return True
+    return "text/html" in request.headers.get("Accept", "")
+
+
+def sign_in_response(message=SIGN_IN_MESSAGE, **extra):
+    """401 for content that needs an account; the site turns it into a prompt."""
+    return content_response(
+        {"sign_in_required": True, "message": message, "sign_in_path": SIGN_IN_PATH, **extra},
+        status=401,
+    )
 
 
 @require_safe
@@ -73,8 +113,9 @@ def _video_data(video):
     }
 
 
-def _material_data(material, *, inherited_lock=False, inherited_notice=""):
+def _material_data(material, *, inherited_lock=False, inherited_notice="", sign_in_required=False):
     locked = inherited_lock or material.is_locked
+    closed = locked or sign_in_required
     notice = (
         _lock_notice(material)
         if material.is_locked
@@ -90,16 +131,24 @@ def _material_data(material, *, inherited_lock=False, inherited_notice=""):
         "extension": material.file_extension,
         "is_locked": locked,
         "lock_notice": notice,
-        "download_url": None if locked else f"/api/v1/materials/{material.pk}/download/",
+        # A staff lock outranks sign-in: it is the reason the file is closed.
+        "sign_in_required": sign_in_required and not locked,
+        "download_url": None if closed else f"/api/v1/materials/{material.pk}/download/",
     }
 
 
-def _lesson_outline_data(lesson, *, inherited_lock=False):
+def _lesson_outline_data(lesson, *, inherited_lock=False, sign_in_required=False):
     locked = inherited_lock or lesson.is_locked
+    closed = locked or sign_in_required
     lock_notice = _lock_notice(lesson.section.course, lesson.section, lesson) if locked else ""
-    videos = [] if locked else [_video_data(video) for video in lesson.public_videos]
+    videos = [] if closed else [_video_data(video) for video in lesson.public_videos]
     materials = [
-        _material_data(material, inherited_lock=locked, inherited_notice=lock_notice)
+        _material_data(
+            material,
+            inherited_lock=locked,
+            inherited_notice=lock_notice,
+            sign_in_required=sign_in_required,
+        )
         for material in lesson.public_materials
     ]
     return {
@@ -110,15 +159,16 @@ def _lesson_outline_data(lesson, *, inherited_lock=False):
         "estimated_minutes": lesson.estimated_minutes,
         "is_locked": locked,
         "lock_notice": lock_notice,
+        "sign_in_required": sign_in_required and not locked,
         "url": f"/api/v1/lessons/{lesson.slug}/",
-        "notes": "" if locked else lesson.notes,
-        "safety_notice": "" if locked else lesson.safety_notice,
+        "notes": "" if closed else lesson.notes,
+        "safety_notice": "" if closed else lesson.safety_notice,
         "videos": videos,
         "materials": materials,
     }
 
 
-def _course_data(course, *, include_outline=False):
+def _course_data(course, *, include_outline=False, sign_in_required=False):
     data = {
         "id": course.pk,
         "title": course.title,
@@ -130,6 +180,8 @@ def _course_data(course, *, include_outline=False):
         "estimated_minutes": course.estimated_minutes,
         "is_locked": course.is_locked,
         "lock_notice": course.lock_notice if course.is_locked else "",
+        "sign_in_required": sign_in_required,
+        "sign_in_message": SIGN_IN_MESSAGE if sign_in_required else "",
         "url": f"/api/v1/courses/{course.slug}/",
     }
     if not include_outline:
@@ -139,7 +191,11 @@ def _course_data(course, *, include_outline=False):
     for section in course.public_sections:
         section_locked = course.is_locked or section.is_locked
         lessons = [
-            _lesson_outline_data(lesson, inherited_lock=section_locked)
+            _lesson_outline_data(
+                lesson,
+                inherited_lock=section_locked,
+                sign_in_required=sign_in_required,
+            )
             for lesson in section.public_lessons
         ]
         sections.append(
@@ -158,6 +214,8 @@ def _course_data(course, *, include_outline=False):
 
 @require_safe
 def course_list(request):
+    if sign_in_needed(request, scope="catalog"):
+        return sign_in_response("Sign in to browse the course library.")
     courses = Course.objects.filter(is_published=True).order_by("ordering", "title", "pk")
     query = request.GET.get("q", "").strip()[:120]
     level = request.GET.get("level", "").strip().lower()
@@ -178,7 +236,7 @@ def course_list(request):
     except (EmptyPage, PageNotAnInteger):
         page = paginator.page(paginator.num_pages or 1)
 
-    return json_response(
+    return content_response(
         {
             "count": paginator.count,
             "page": page.number,
@@ -205,7 +263,17 @@ def course_detail(request, slug):
         slug=slug,
         is_published=True,
     )
-    return json_response(_course_data(course, include_outline=True))
+    # A missing or unpublished course stays a 404, so gating cannot be used to
+    # discover what is in the catalogue before it is published.
+    if sign_in_needed(request, scope="catalog"):
+        return sign_in_response("Sign in to open this course.")
+    return content_response(
+        _course_data(
+            course,
+            include_outline=True,
+            sign_in_required=sign_in_needed(request, scope="lesson"),
+        )
+    )
 
 
 def _lesson_is_published(lesson):
@@ -250,14 +318,26 @@ def lesson_detail(request, slug):
     if not _lesson_is_published(lesson):
         raise Http404
     if _lesson_is_locked(lesson):
-        return json_response(
+        return content_response(
             {
                 "locked": True,
                 "message": _lock_notice(lesson.section.course, lesson.section, lesson),
             },
             status=403,
         )
-    return json_response(_lesson_detail_data(lesson))
+    if sign_in_needed(request, scope="lesson"):
+        # Enough context for the sign-in prompt to say what it is opening.
+        return sign_in_response(
+            lesson={
+                "title": lesson.title,
+                "slug": lesson.slug,
+                "summary": lesson.summary,
+                "estimated_minutes": lesson.estimated_minutes,
+                "course": {"title": lesson.section.course.title, "slug": lesson.section.course.slug},
+                "section": {"title": lesson.section.title, "id": lesson.section_id},
+            }
+        )
+    return content_response(_lesson_detail_data(lesson))
 
 
 def _material_is_locked(material):
@@ -282,13 +362,20 @@ def material_download(request, pk):
     )
     if _material_is_locked(material):
         lesson = material.lesson
-        return json_response(
+        return content_response(
             {
                 "locked": True,
                 "message": _lock_notice(material, lesson, lesson.section, lesson.section.course),
             },
             status=403,
         )
+    if sign_in_needed(request, scope="lesson"):
+        lesson_path = f"/lessons/{material.lesson.slug}"
+        if prefers_html(request):
+            # A clicked download link is a browser navigation, not a fetch call:
+            # send the learner to the sign-in page instead of showing raw JSON.
+            return redirect(f"{SIGN_IN_PATH}?next={quote(lesson_path, safe='/')}")
+        return sign_in_response("Sign in to download this material.", next=lesson_path)
     if not material.file:
         raise Http404
     try:
@@ -319,6 +406,7 @@ def material_download(request, pk):
     response = redirect(file_url)
     response["Cache-Control"] = "private, no-store"
     response["Referrer-Policy"] = "no-referrer"
+    patch_vary_headers(response, ("Cookie",))
     return response
 
 

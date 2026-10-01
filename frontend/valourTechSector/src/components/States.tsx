@@ -1,5 +1,6 @@
-import { AlertCircle, BookOpen, LockKeyhole } from 'lucide-react'
+import { AlertCircle, ArrowRight, BookOpen, KeyRound, LockKeyhole } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { withNext } from '../auth/nextPath'
 
 export function LoadingState({ label = 'Loading…' }: { label?: string }) {
   return <div className="state-panel" role="status"><span className="loading-dot" aria-hidden="true" />{label}</div>
@@ -25,6 +26,22 @@ export function LockedNotice({ message }: { message?: string }) {
     <aside className="locked-notice" role="status">
       <span className="locked-icon"><LockKeyhole size={17} aria-hidden="true" /></span>
       <div><strong>Access paused</strong><p>{message || 'This learning material is currently locked.'}</p></div>
+    </aside>
+  )
+}
+
+export function SignInNotice({ message, next, lessonTitle }: { message?: string; next: string; lessonTitle?: string }) {
+  return (
+    <aside className="signin-notice" role="status">
+      <span className="signin-icon"><KeyRound size={18} aria-hidden="true" /></span>
+      <div>
+        <strong>{lessonTitle ? `Sign in to open ${lessonTitle}` : 'Sign in to continue'}</strong>
+        <p>{message || 'Lesson notes, videos, and downloads are for signed-in learners.'}</p>
+        <div className="signin-actions">
+          <Link className="button button-primary" to={withNext('/signin', next)}>Sign in <ArrowRight size={15} aria-hidden="true" /></Link>
+          <Link className="button button-outline" to={withNext('/signup', next)}>Create a free account</Link>
+        </div>
+      </div>
     </aside>
   )
 }

@@ -3,6 +3,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from .models import Course, Lesson, Material, Section, SiteProfile, SocialLink, VideoLink
+from .testing import force_sign_in
 
 
 class PublicCourseApiTests(TestCase):
@@ -100,6 +101,10 @@ class PublicCourseApiTests(TestCase):
         self.assertEqual(response.json(), {"locked": True, "message": "This section will open soon."})
 
     def test_open_lesson_returns_notes_and_youtube_embed_and_source(self):
+        # Lesson content is for signed-in learners; the gating itself is covered
+        # in test_accounts.py.
+        force_sign_in(self.client)
+
         response = self.client.get(reverse("valour:lesson-detail", args=[self.lesson.slug]))
 
         self.assertEqual(response.status_code, 200)
@@ -160,6 +165,7 @@ class PublicCourseApiTests(TestCase):
             kind=Material.Kind.PDF,
             file="course-materials/datasheet.pdf",
         )
+        force_sign_in(self.client)
 
         response = self.client.get(reverse("valour:material-download", args=[material.pk]))
 

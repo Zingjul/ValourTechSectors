@@ -25,6 +25,7 @@ from django.urls import reverse
 from .models import Course, Lesson, Material, Section, VideoLink, validate_material_size
 from .security import immutable_static_file
 from .site import _frontend_html
+from .testing import force_sign_in
 from .validators import validate_material_content
 
 
@@ -87,7 +88,7 @@ class FrontendServingTests(SimpleTestCase):
         self.addCleanup(_frontend_html.cache_clear)
 
     def test_deep_links_and_optional_trailing_slashes_serve_the_spa(self):
-        for path in ("/", "/courses", "/courses/", "/courses/resistors", "/lessons/ohms/", "/contact"):
+        for path in ("/", "/courses", "/courses/", "/courses/resistors", "/lessons/ohms/", "/contact", "/signin", "/signup/"):
             with self.subTest(path=path):
                 response = self.client.get(path)
                 self.assertEqual(response.status_code, 200)
@@ -136,6 +137,8 @@ class FrontendServingTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Disallow: /admin/", response.content)
         self.assertIn(b"Disallow: /api/", response.content)
+        self.assertIn(b"Disallow: /signin", response.content)
+        self.assertIn(b"Disallow: /signup", response.content)
 
     def test_only_hashed_static_assets_are_immutable(self):
         for path in ("/static/site/assets/index-AbCd1234.js", "/static/admin/css/base.123456abcdef.css"):
@@ -226,7 +229,10 @@ class AccessAndQueryTests(TestCase):
     def test_lesson_prefetches_only_public_materials_and_active_videos(self):
         VideoLink.objects.create(lesson=self.lesson, platform="youtube", url="https://youtu.be/dQw4w9WgXcQ", is_active=False)
         Material.objects.create(lesson=self.lesson, title="Draft", kind="pdf", file="course-materials/draft.pdf", is_published=False)
-        with self.assertNumQueries(3):
+        force_sign_in(self.client)
+        # 3 content queries plus the session and learner lookups a signed-in
+        # request needs; neither grows with the number of materials or videos.
+        with self.assertNumQueries(5):
             response = self.client.get(reverse("valour:lesson-detail", args=[self.lesson.slug]))
         self.assertEqual(response.json()["videos"], [])
         self.assertEqual(len(response.json()["materials"]), 1)
@@ -257,6 +263,7 @@ class AccessAndQueryTests(TestCase):
 
     @override_settings(SUPABASE_URL="https://example.supabase.co")
     def test_signed_redirects_cannot_be_cached_or_leak_referrers(self):
+        force_sign_in(self.client)
         with patch("django.core.files.storage.FileSystemStorage.url", return_value="https://example.supabase.co/file?X-Amz-Signature=secret"):
             response = self.client.get(reverse("valour:material-download", args=[self.material.pk]))
         self.assertEqual(response.status_code, 302)
@@ -264,6 +271,7 @@ class AccessAndQueryTests(TestCase):
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
 
     def test_file_download_rejects_untrusted_and_insecure_redirect_targets(self):
+        force_sign_in(self.client)
         for file_url in ("//attacker.example/file.pdf", "http://example.supabase.co/file.pdf", "https://attacker.example/file.pdf"):
             with self.subTest(file_url=file_url):
                 with patch("django.core.files.storage.FileSystemStorage.url", return_value=file_url):
@@ -271,6 +279,7 @@ class AccessAndQueryTests(TestCase):
                 self.assertEqual(response.status_code, 404)
 
     def test_storage_errors_are_sanitized_and_return_503(self):
+        force_sign_in(self.client)
         error = ClientError({"Error": {"Code": "InvalidAccessKey", "Message": "private-secret"}}, "GetObject")
         with patch("django.core.files.storage.FileSystemStorage.url", side_effect=error):
             with self.assertLogs("valour.views", level="ERROR") as logs:
@@ -286,21 +295,24 @@ class SupabaseRowLevelSecurityTests(TestCase):
     @skipUnless(connection.vendor == "postgresql", "Supabase RLS behavior requires PostgreSQL")
     def test_browser_data_api_role_cannot_read_django_tables_without_a_policy(self):
         role = "valour_rls_test_anon"
-        with connection.cursor() as cursor:
-            cursor.execute(f"CREATE ROLE {role} NOLOGIN")
-            try:
-                cursor.execute(f"GRANT USAGE ON SCHEMA public TO {role}")
-                cursor.execute(f"GRANT SELECT ON TABLE valour_course TO {role}")
-                cursor.execute("SELECT relrowsecurity FROM pg_class WHERE relname = 'valour_course'")
-                self.assertTrue(cursor.fetchone()[0], "RLS migration must protect every Django-managed table")
-                cursor.execute(f"SET ROLE {role}")
-                cursor.execute("SELECT count(*) FROM valour_course")
-                self.assertEqual(cursor.fetchone()[0], 0, "No RLS policy should expose unpublished course rows to browser roles")
-            finally:
-                cursor.execute("RESET ROLE")
-                cursor.execute(f"REVOKE ALL ON TABLE valour_course FROM {role}")
-                cursor.execute(f"REVOKE USAGE ON SCHEMA public FROM {role}")
-                cursor.execute(f"DROP ROLE {role}")
+        # valour_learner holds sign-up records, so it needs the same protection
+        # that migration 0004 gave the tables that already existed.
+        for table in ("valour_course", "valour_learner"):
+            with self.subTest(table=table), connection.cursor() as cursor:
+                cursor.execute(f"CREATE ROLE {role} NOLOGIN")
+                try:
+                    cursor.execute(f"GRANT USAGE ON SCHEMA public TO {role}")
+                    cursor.execute(f"GRANT SELECT ON TABLE {table} TO {role}")
+                    cursor.execute(f"SELECT relrowsecurity FROM pg_class WHERE relname = '{table}'")
+                    self.assertTrue(cursor.fetchone()[0], "RLS migration must protect every Django-managed table")
+                    cursor.execute(f"SET ROLE {role}")
+                    cursor.execute(f"SELECT count(*) FROM {table}")
+                    self.assertEqual(cursor.fetchone()[0], 0, "No RLS policy should expose Django rows to browser roles")
+                finally:
+                    cursor.execute("RESET ROLE")
+                    cursor.execute(f"REVOKE ALL ON TABLE {table} FROM {role}")
+                    cursor.execute(f"REVOKE USAGE ON SCHEMA public FROM {role}")
+                    cursor.execute(f"DROP ROLE {role}")
         self.assertTrue(Course.objects.filter(pk=self.course.pk).exists(), "The database owner must retain Django access")
 
 
@@ -346,7 +358,7 @@ class UploadValidationTests(SimpleTestCase):
 
 
 class ProductionSettingsTests(SimpleTestCase):
-    def load_settings(self, **overrides):
+    def settings_environment(self, **overrides):
         environment = dict(os.environ)
         environment.update({
             "DJANGO_SETTINGS_MODULE": "valour_tech_sectors.settings",
@@ -370,6 +382,20 @@ class ProductionSettingsTests(SimpleTestCase):
                 environment.pop(name, None)
             else:
                 environment[name] = value
+        return environment
+
+    def run_settings_code(self, code, **overrides):
+        """Import the settings module in a subprocess with a production environment."""
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=settings.BASE_DIR,
+            env=self.settings_environment(**overrides),
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+
+    def load_settings(self, **overrides):
         code = (
             "import dotenv; dotenv.load_dotenv = lambda *args, **kwargs: False; "
             "import json; from django.conf import settings as s; "
@@ -378,10 +404,7 @@ class ProductionSettingsTests(SimpleTestCase):
             "'secure_cookies': s.SESSION_COOKIE_SECURE and s.CSRF_COOKIE_SECURE, "
             "'health_checks': s.DATABASES['default']['CONN_HEALTH_CHECKS']}))"
         )
-        return subprocess.run(
-            [sys.executable, "-c", code], cwd=settings.BASE_DIR,
-            env=environment, text=True, capture_output=True, timeout=15,
-        )
+        return self.run_settings_code(code, **overrides)
 
     def test_production_defaults_disable_debug_and_enforce_database_tls(self):
         result = self.load_settings(DJANGO_DEBUG=None)
@@ -431,6 +454,44 @@ class ProductionSettingsTests(SimpleTestCase):
         ):
             with self.subTest(values=values):
                 self.assertNotEqual(self.load_settings(**values).returncode, 0)
+
+    def test_invalid_learner_account_settings_are_rejected(self):
+        for values in (
+            {"LEARNER_CONTENT_ACCESS": "members"}, {"LEARNER_CONTENT_ACCESS": ""},
+            {"LEARNER_LOGIN_FAILURE_LIMIT": "2"}, {"LEARNER_LOGIN_LOCKOUT_MINUTES": "0"},
+            {"LEARNER_PASSWORD_MIN_LENGTH": "6"}, {"LEARNER_SESSION_REMEMBER_DAYS": "0"},
+        ):
+            with self.subTest(values=values):
+                result = self.load_settings(**values)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(next(iter(values)), result.stderr)
+
+    def test_learner_defaults_gate_lessons_without_touching_the_staff_policy(self):
+        code = (
+            "import dotenv; dotenv.load_dotenv = lambda *args, **kwargs: False; "
+            "import json; from django.conf import settings as s; "
+            "print(json.dumps({'access': s.LEARNER_CONTENT_ACCESS, "
+            "'backends': s.AUTHENTICATION_BACKENDS, "
+            "'staff_minimum': s.AUTH_PASSWORD_VALIDATORS[1]['OPTIONS']['min_length'], "
+            "'learner_minimum': s.LEARNER_PASSWORD_MIN_LENGTH}))"
+        )
+        result = self.run_settings_code(code)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["access"], "lessons")
+        self.assertEqual(data["staff_minimum"], 12)
+        self.assertEqual(data["learner_minimum"], 8)
+        # django-axes stays first so admin lockouts keep working, and the learner
+        # backend runs before ModelBackend for email sign-ins.
+        self.assertEqual(
+            data["backends"],
+            [
+                "axes.backends.AxesStandaloneBackend",
+                "valour.auth_backends.LearnerBackend",
+                "django.contrib.auth.backends.ModelBackend",
+            ],
+        )
 
 
 @override_settings(SUPABASE_URL="https://example.supabase.co", SUPABASE_STORAGE_BUCKET="course-materials")

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, ArrowRight, Clock3, LockKeyhole } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Clock3, KeyRound, LockKeyhole } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { ApiError, getCourse, type CourseDetail } from '../api'
-import { ErrorState, LoadingState, LockedNotice } from '../components/States'
+import { ErrorState, LoadingState, LockedNotice, SignInNotice } from '../components/States'
 
 type CourseState = { slug: string; course?: CourseDetail; error?: string }
 
@@ -59,6 +59,7 @@ export function CoursePage() {
 
       <section className="course-content section-shell">
         {course.is_locked && <LockedNotice message={course.lock_notice} />}
+        {!course.is_locked && course.sign_in_required && <SignInNotice message={course.sign_in_message} next={`/courses/${course.slug}`} />}
         <div className="course-content-heading">
           <div><p className="eyebrow">COURSE OUTLINE</p><h2>What you’ll study</h2></div>
           <Link to="/courses" className="text-link"><ArrowLeft size={15} aria-hidden="true" /> All courses</Link>
@@ -74,11 +75,15 @@ export function CoursePage() {
                 </div>
                 {section.lessons.length > 0 && <div className="lesson-list">
                   {section.lessons.map((lesson, lessonIndex) => (
-                    <Link className={`lesson-row${lesson.is_locked ? ' is-locked' : ''}`} to={`/lessons/${lesson.slug}`} key={lesson.id}>
+                    <Link className={`lesson-row${lesson.is_locked ? ' is-locked' : ''}${lesson.sign_in_required ? ' needs-sign-in' : ''}`} to={`/lessons/${lesson.slug}`} key={lesson.id}>
                       <span className="lesson-order">{String(lessonIndex + 1).padStart(2, '0')}</span>
-                      <span className="lesson-row-main"><strong>{lesson.title}</strong><span>{lesson.summary || (lesson.is_locked ? lesson.lock_notice : 'Notes, video, and lesson materials')}</span></span>
+                      <span className="lesson-row-main"><strong>{lesson.title}</strong><span>{lesson.summary || (lesson.is_locked ? lesson.lock_notice : lesson.sign_in_required ? 'Sign in to open the notes, video, and materials' : 'Notes, video, and lesson materials')}</span></span>
                       {lesson.estimated_minutes > 0 && <span className="lesson-duration">{lesson.estimated_minutes} min</span>}
-                      {lesson.is_locked ? <LockKeyhole className="lesson-trailing" size={16} aria-hidden="true" /> : <ArrowRight className="lesson-trailing" size={16} aria-hidden="true" />}
+                      {lesson.is_locked
+                        ? <LockKeyhole className="lesson-trailing" size={16} aria-hidden="true" />
+                        : lesson.sign_in_required
+                          ? <KeyRound className="lesson-trailing" size={16} aria-hidden="true" />
+                          : <ArrowRight className="lesson-trailing" size={16} aria-hidden="true" />}
                     </Link>
                   ))}
                 </div>}

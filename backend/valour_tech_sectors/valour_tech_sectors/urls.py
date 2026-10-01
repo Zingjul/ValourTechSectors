@@ -14,7 +14,7 @@ urlpatterns = [
     path("api/v1/", include("valour.urls")),
     path("robots.txt", site.robots, name="robots"),
     path("", site.frontend, name="frontend"),
-    re_path(r"^(?:courses(?:/[-\w]+)?|lessons/[-\w]+|contact)/?$", site.frontend),
+    re_path(r"^(?:courses(?:/[-\w]+)?|lessons/[-\w]+|contact|signin|signup)/?$", site.frontend),
 ]
 
 # Development only. Production never exposes local media paths.

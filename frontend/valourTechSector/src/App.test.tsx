@@ -1,12 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import App from './App'
-import { ApiError, getCourse, getCourses, getLesson, getSiteProfile, type CatalogResponse, type CourseDetail, type LessonDetail, type SiteProfile } from './api'
+import { ApiError, getCourse, getCourses, getLesson, getSession, getSiteProfile, type CatalogResponse, type CourseDetail, type LessonDetail, type SessionResponse, type SiteProfile } from './api'
 
 vi.mock('./api', async (importOriginal) => ({
   ...await importOriginal<typeof import('./api')>(),
-  getCourses: vi.fn(), getCourse: vi.fn(), getLesson: vi.fn(), getSiteProfile: vi.fn(),
+  getCourses: vi.fn(), getCourse: vi.fn(), getLesson: vi.fn(), getSession: vi.fn(), getSiteProfile: vi.fn(),
 }))
 
 const catalog: CatalogResponse = {
@@ -14,8 +14,11 @@ const catalog: CatalogResponse = {
   results: [{
     id: 1, title: 'Resistors', slug: 'resistors', summary: 'Resistance made clear.', description: '',
     level: 'beginner', level_label: 'Beginner', estimated_minutes: 20, is_locked: false,
-    lock_notice: '', url: '/api/v1/courses/resistors/',
+    lock_notice: '', sign_in_required: false, sign_in_message: '', url: '/api/v1/courses/resistors/',
   }],
+}
+const signedOut: SessionResponse = {
+  authenticated: false, learner: null, content_access: 'lessons', sign_in_path: '/signin', csrf_token: 'token-1',
 }
 const profile: SiteProfile = {
   brand_name: 'ValourTech Sectors', tagline: '', contact_email: '', phone_number: '',
@@ -33,6 +36,7 @@ function renderRoute(path: string) {
 }
 
 beforeEach(() => {
+  vi.mocked(getSession).mockResolvedValue(signedOut)
   vi.mocked(getCourses).mockResolvedValue(catalog)
   vi.mocked(getSiteProfile).mockResolvedValue(profile)
   vi.mocked(getCourse).mockResolvedValue(course)
@@ -67,6 +71,25 @@ describe('learner routes', () => {
     expect(await screen.findByText('This lesson is not open yet.')).toBeInTheDocument()
     expect(screen.queryByText('Resistance is measured in ohms.')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /Download/ })).not.toBeInTheDocument()
+  })
+
+  it('turns a withheld lesson into a sign-in prompt that remembers where the learner was going', async () => {
+    vi.mocked(getLesson).mockRejectedValue(new ApiError('Sign in to open your lesson notes, videos, and downloads.', 401, {
+      sign_in_required: true,
+      message: 'Sign in to open your lesson notes, videos, and downloads.',
+      sign_in_path: '/signin',
+      lesson: {
+        id: 1, title: 'Resistance in ohms', slug: 'ohms', summary: '', estimated_minutes: 10,
+        course: { title: 'Resistors', slug: 'resistors' }, section: { id: 1, title: 'Basics' },
+      },
+    }))
+    renderRoute('/lessons/ohms')
+
+    await screen.findByText('Sign in to open Resistance in ohms')
+    const notice = screen.getByRole('status')
+    expect(screen.queryByText('Resistance is measured in ohms.')).not.toBeInTheDocument()
+    expect(within(notice).getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/signin?next=%2Flessons%2Fohms')
+    expect(within(notice).getByRole('link', { name: /Create a free account/ })).toHaveAttribute('href', '/signup?next=%2Flessons%2Fohms')
   })
 
   it('renders an open lesson and its safety guidance', async () => {

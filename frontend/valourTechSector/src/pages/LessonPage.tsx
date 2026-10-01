@@ -1,10 +1,16 @@
 import { useEffect, useState } from 'react'
 import { AlertCircle, ArrowLeft, ArrowUpRight, Download, ExternalLink, FileText, LockKeyhole, Play } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
-import { ApiError, getLesson, type LessonDetail } from '../api'
-import { ErrorState, LoadingState, LockedNotice } from '../components/States'
+import { ApiError, getLesson, isSignInRequired, signInRequiredPayload, type LessonDetail, type SignInRequiredPayload } from '../api'
+import { ErrorState, LoadingState, LockedNotice, SignInNotice } from '../components/States'
 
-type LessonState = { slug: string; lesson?: LessonDetail; error?: string; lockedMessage?: string }
+type LessonState = {
+  slug: string
+  lesson?: LessonDetail
+  error?: string
+  lockedMessage?: string
+  signIn?: SignInRequiredPayload
+}
 
 export function LessonPage() {
   const { slug = '' } = useParams()
@@ -13,6 +19,7 @@ export function LessonPage() {
   const lesson = isLoading ? undefined : state.lesson
   const error = isLoading ? '' : state.error || ''
   const lockedMessage = isLoading ? '' : state.lockedMessage || ''
+  const signIn = isLoading ? undefined : state.signIn
 
   useEffect(() => {
     let active = true
@@ -22,6 +29,7 @@ export function LessonPage() {
       .catch((reason: Error) => {
         if (!active) return
         if (reason instanceof ApiError && reason.status === 403) setState({ slug, lockedMessage: reason.message })
+        else if (isSignInRequired(reason)) setState({ slug, signIn: signInRequiredPayload(reason) ?? undefined })
         else {
           const message = reason instanceof ApiError && reason.status === 404
             ? 'We couldn’t find that lesson. It may be unpublished or unavailable.'
@@ -36,6 +44,14 @@ export function LessonPage() {
   if (lockedMessage) return <section className="section-shell detail-shell locked-page">
     <div className="breadcrumb"><Link to="/courses">COURSES</Link><span className="breadcrumb-slash">/</span><span>LESSON</span></div>
     <LockedNotice message={lockedMessage} />
+    <Link className="text-link back-link" to="/courses"><ArrowLeft size={15} aria-hidden="true" /> Return to the course library</Link>
+  </section>
+  if (signIn) return <section className="section-shell detail-shell locked-page">
+    <div className="breadcrumb">
+      {signIn.lesson && <><Link to={`/courses/${signIn.lesson.course.slug}`}>{signIn.lesson.course.title.toUpperCase()}</Link><span className="breadcrumb-slash">/</span></>}
+      <span>LESSON</span>
+    </div>
+    <SignInNotice message={signIn.message} next={`/lessons/${slug}`} lessonTitle={signIn.lesson?.title} />
     <Link className="text-link back-link" to="/courses"><ArrowLeft size={15} aria-hidden="true" /> Return to the course library</Link>
   </section>
   if (error || !lesson) return <section className="section-shell detail-shell"><ErrorState message={error || 'This lesson is unavailable.'} /><Link className="text-link back-link" to="/courses"><ArrowLeft size={15} aria-hidden="true" /> Back to courses</Link></section>
