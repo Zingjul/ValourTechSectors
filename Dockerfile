@@ -26,4 +26,6 @@ RUN DJANGO_DEBUG=true python backend/valour_tech_sectors/manage.py collectstatic
     && chown -R app:app /app
 USER app
 EXPOSE 10000
+# Apply/check migrations before serving, even without Render's pre-deploy hook.
+ENTRYPOINT ["/bin/sh", "/app/backend/entrypoint.sh"]
 CMD ["gunicorn", "--config", "backend/gunicorn.conf.py", "valour_tech_sectors.wsgi:application"]

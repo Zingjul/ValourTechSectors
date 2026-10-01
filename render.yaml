@@ -10,9 +10,11 @@ services:
     dockerContext: .
     healthCheckPath: /api/v1/ready/
     autoDeployTrigger: checksPass
+    # The image also prepares the DB at startup for manually configured services.
+    # Both paths use the same advisory lock, so concurrent starts cannot race.
     preDeployCommand: >-
       python backend/valour_tech_sectors/manage.py check --deploy --fail-level ERROR &&
-      python backend/valour_tech_sectors/manage.py migrate --noinput &&
+      python backend/valour_tech_sectors/manage.py prepare_database &&
       python backend/valour_tech_sectors/manage.py verify_storage
     envVars:
       - key: DJANGO_DEBUG
