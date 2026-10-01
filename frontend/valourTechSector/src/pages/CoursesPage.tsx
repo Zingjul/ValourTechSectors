@@ -12,7 +12,6 @@ export function CoursesPage() {
   const filterKey = searchParams.toString()
   const query = searchParams.get('q') || ''
   const level = searchParams.get('level') || ''
-  const page = Number(searchParams.get('page') || 1)
   const [catalogState, setCatalogState] = useState<CatalogState>({ key: '__not-loaded__' })
   const isLoading = catalogState.key !== filterKey
   const catalog = isLoading ? undefined : catalogState.data
@@ -20,10 +19,11 @@ export function CoursesPage() {
 
   useEffect(() => {
     let active = true
-    getCourses(new URLSearchParams(filterKey))
+    const controller = new AbortController()
+    getCourses(new URLSearchParams(filterKey), { signal: controller.signal })
       .then((data) => { if (active) setCatalogState({ key: filterKey, data }) })
       .catch((reason: Error) => { if (active) setCatalogState({ key: filterKey, error: reason.message }) })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [filterKey])
 
   function submitFilters(event: FormEvent<HTMLFormElement>) {
@@ -87,9 +87,9 @@ export function CoursesPage() {
               {catalog.results.map((course, index) => <CourseCard key={course.id} course={course} index={index} />)}
             </div>
             {catalog.pages > 1 && <nav className="pagination" aria-label="Course pages">
-              <button className="button button-outline" type="button" disabled={!catalog.has_previous} onClick={() => changePage(page - 1)}><ArrowLeft size={15} aria-hidden="true" /> Previous</button>
+              <button className="button button-outline" type="button" disabled={!catalog.has_previous} onClick={() => changePage(catalog.page - 1)}><ArrowLeft size={15} aria-hidden="true" /> Previous</button>
               <span>Page {catalog.page} of {catalog.pages}</span>
-              <button className="button button-outline" type="button" disabled={!catalog.has_next} onClick={() => changePage(page + 1)}>Next <ArrowRight size={15} aria-hidden="true" /></button>
+              <button className="button button-outline" type="button" disabled={!catalog.has_next} onClick={() => changePage(catalog.page + 1)}>Next <ArrowRight size={15} aria-hidden="true" /></button>
             </nav>}
           </>
         ) : <EmptyCourses filtered={Boolean(query || level)} />}

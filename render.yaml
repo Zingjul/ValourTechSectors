@@ -1,0 +1,48 @@
+# One origin: Django + the compiled React site. Supabase remains external.
+# Choose the matching Supabase region before creating this service.
+services:
+  - type: web
+    name: valourtech-sectors
+    runtime: docker
+    plan: 0.5c-512mb
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/v1/ready/
+    autoDeployTrigger: checksPass
+    preDeployCommand: >-
+      python backend/valour_tech_sectors/manage.py check --deploy --fail-level ERROR &&
+      python backend/valour_tech_sectors/manage.py migrate --noinput &&
+      python backend/valour_tech_sectors/manage.py verify_storage
+    envVars:
+      - key: DJANGO_DEBUG
+        value: "false"
+      # Generate locally with secrets.token_urlsafe(64); do not commit the value.
+      - key: DJANGO_SECRET_KEY
+        sync: false
+      # RENDER_EXTERNAL_HOSTNAME is automatically added to allowed hosts/origins.
+      # Add custom domains in the dashboard later; see docs/production-guide.md.
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false
+      - key: SUPABASE_S3_ACCESS_KEY_ID
+        sync: false
+      - key: SUPABASE_S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: SUPABASE_S3_REGION
+        sync: false
+      - key: SUPABASE_STORAGE_SIGNED_URL_TTL
+        value: "300"
+      - key: MAX_COURSE_FILE_SIZE_MB
+        value: "25"
+      - key: DATABASE_CONN_MAX_AGE
+        value: "60"
+      - key: WEB_CONCURRENCY
+        value: "2"
+      - key: GUNICORN_THREADS
+        value: "4"
+      - key: DJANGO_SECURE_HSTS_SECONDS
+        value: "3600"

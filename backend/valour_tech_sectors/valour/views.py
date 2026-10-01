@@ -1,11 +1,18 @@
+import logging
 from urllib.parse import urlparse
 
+from botocore.exceptions import BotoCoreError, ClientError
+from django.conf import settings
 from django.core.paginator import EmptyPage, PageNotAnInteger, Paginator
+from django.db import DatabaseError, connections
+from django.db.models import Prefetch, Q
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
-from django.views.decorators.http import require_GET
+from django.views.decorators.http import require_safe
 
-from .models import Course, Lesson, Material, Section, SiteProfile, SocialLink
+from .models import Course, Lesson, Material, Section, SiteProfile, SocialLink, VideoLink
+
+logger = logging.getLogger(__name__)
 
 
 def json_response(data, *, status=200):
@@ -14,9 +21,33 @@ def json_response(data, *, status=200):
     return response
 
 
-@require_GET
+@require_safe
 def health(request):
     return json_response({"status": "ok"})
+
+
+@require_safe
+def ready(request):
+    """Readiness depends on Postgres and the built frontend, not external video providers."""
+    if not settings.DEBUG and not (settings.FRONTEND_DIST / "index.html").is_file():
+        logger.error("Readiness frontend build is missing.")
+        return json_response({"status": "unavailable"}, status=503)
+    try:
+        with connections["default"].cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+    except DatabaseError:
+        # Connection errors may contain credentials; never return/log their text.
+        logger.error("Readiness database probe failed.")
+        return json_response({"status": "unavailable"}, status=503)
+    return json_response({"status": "ok"})
+
+
+def _public_lessons():
+    return Lesson.objects.select_related("section__course").prefetch_related(
+        Prefetch("videos", queryset=VideoLink.objects.filter(is_active=True), to_attr="public_videos"),
+        Prefetch("materials", queryset=Material.objects.filter(is_published=True), to_attr="public_materials"),
+    )
 
 
 def _lesson_is_locked(lesson):
@@ -66,10 +97,10 @@ def _material_data(material, *, inherited_lock=False, inherited_notice=""):
 def _lesson_outline_data(lesson, *, inherited_lock=False):
     locked = inherited_lock or lesson.is_locked
     lock_notice = _lock_notice(lesson.section.course, lesson.section, lesson) if locked else ""
-    videos = [] if locked else [_video_data(video) for video in lesson.videos.filter(is_active=True)]
+    videos = [] if locked else [_video_data(video) for video in lesson.public_videos]
     materials = [
         _material_data(material, inherited_lock=locked, inherited_notice=lock_notice)
-        for material in lesson.materials.filter(is_published=True)
+        for material in lesson.public_materials
     ]
     return {
         "id": lesson.pk,
@@ -105,11 +136,11 @@ def _course_data(course, *, include_outline=False):
         return data
 
     sections = []
-    for section in course.sections.filter(is_published=True):
+    for section in course.public_sections:
         section_locked = course.is_locked or section.is_locked
         lessons = [
             _lesson_outline_data(lesson, inherited_lock=section_locked)
-            for lesson in section.lessons.filter(is_published=True)
+            for lesson in section.public_lessons
         ]
         sections.append(
             {
@@ -125,14 +156,12 @@ def _course_data(course, *, include_outline=False):
     return data
 
 
-@require_GET
+@require_safe
 def course_list(request):
-    courses = Course.objects.filter(is_published=True).order_by("ordering", "title")
+    courses = Course.objects.filter(is_published=True).order_by("ordering", "title", "pk")
     query = request.GET.get("q", "").strip()[:120]
     level = request.GET.get("level", "").strip().lower()
     if query:
-        from django.db.models import Q
-
         courses = courses.filter(Q(title__icontains=query) | Q(summary__icontains=query))
     if level:
         if level not in Course.Level.values:
@@ -161,10 +190,18 @@ def course_list(request):
     )
 
 
-@require_GET
+@require_safe
 def course_detail(request, slug):
     course = get_object_or_404(
-        Course.objects.prefetch_related("sections__lessons__videos", "sections__lessons__materials"),
+        Course.objects.prefetch_related(
+            Prefetch(
+                "sections",
+                queryset=Section.objects.filter(is_published=True).prefetch_related(
+                    Prefetch("lessons", queryset=_public_lessons().filter(is_published=True), to_attr="public_lessons")
+                ),
+                to_attr="public_sections",
+            )
+        ),
         slug=slug,
         is_published=True,
     )
@@ -195,19 +232,19 @@ def _lesson_detail_data(lesson):
         "section": {"title": lesson.section.title, "id": lesson.section_id},
         "videos": [
             _video_data(video)
-            for video in lesson.videos.filter(is_active=True)
+            for video in lesson.public_videos
         ],
         "materials": [
             _material_data(material)
-            for material in lesson.materials.filter(is_published=True)
+            for material in lesson.public_materials
         ],
     }
 
 
-@require_GET
+@require_safe
 def lesson_detail(request, slug):
     lesson = get_object_or_404(
-        Lesson.objects.select_related("section__course").prefetch_related("videos", "materials"),
+        _public_lessons(),
         slug=slug,
     )
     if not _lesson_is_published(lesson):
@@ -233,7 +270,7 @@ def _material_is_locked(material):
     )
 
 
-@require_GET
+@require_safe
 def material_download(request, pk):
     material = get_object_or_404(
         Material.objects.select_related("lesson__section__course"),
@@ -256,17 +293,36 @@ def material_download(request, pk):
         raise Http404
     try:
         file_url = material.file.url
+    except (BotoCoreError, ClientError):
+        logger.error("Material URL signing failed.")
+        return json_response({"message": "This download is temporarily unavailable."}, status=503)
     except (ValueError, OSError):
         raise Http404
     if not file_url:
         raise Http404
     parsed = urlparse(file_url)
-    if parsed.scheme in {"http", "https"} or file_url.startswith("/"):
-        return redirect(file_url)
-    return HttpResponse(status=404)
+    if parsed.scheme:
+        storage_origin = urlparse(settings.SUPABASE_URL)
+        if (
+            parsed.scheme != "https"
+            or not storage_origin.netloc
+            or parsed.netloc.lower() != storage_origin.netloc.lower()
+            or parsed.username
+            or parsed.password
+        ):
+            raise Http404
+    elif parsed.netloc or not parsed.path.startswith("/") or file_url.startswith("//"):
+        # Local development files are root-relative /media/ URLs only; reject
+        # protocol-relative URLs so file metadata cannot become an open redirect.
+        raise Http404
+
+    response = redirect(file_url)
+    response["Cache-Control"] = "private, no-store"
+    response["Referrer-Policy"] = "no-referrer"
+    return response
 
 
-@require_GET
+@require_safe
 def site_profile(request):
     profile = SiteProfile.objects.first()
     social_links = SocialLink.objects.filter(is_active=True).order_by("ordering", "platform", "id")

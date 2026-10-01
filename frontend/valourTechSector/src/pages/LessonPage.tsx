@@ -16,7 +16,8 @@ export function LessonPage() {
 
   useEffect(() => {
     let active = true
-    getLesson(slug)
+    const controller = new AbortController()
+    getLesson(slug, { signal: controller.signal })
       .then((data) => { if (active) setState({ slug, lesson: data }) })
       .catch((reason: Error) => {
         if (!active) return
@@ -28,7 +29,7 @@ export function LessonPage() {
           setState({ slug, error: message })
         }
       })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [slug])
 
   if (isLoading) return <section className="section-shell detail-shell"><LoadingState label="Opening lesson…" /></section>

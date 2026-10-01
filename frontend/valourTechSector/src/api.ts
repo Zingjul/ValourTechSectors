@@ -10,23 +10,55 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string): Promise<T> {
-  let response: Response
-  try {
-    response = await fetch(path, { headers: { Accept: 'application/json' } })
-  } catch {
-    throw new ApiError('The learning service is not reachable right now. Please try again.', 0, null)
-  }
+export type RequestOptions = { signal?: AbortSignal }
+const REQUEST_TIMEOUT_MS = 15_000
 
-  const payload: unknown = await response.json().catch(() => null)
-  if (!response.ok) {
-    const message =
-      typeof payload === 'object' && payload !== null && 'message' in payload
-        ? String(payload.message)
-        : `Request failed (${response.status}).`
-    throw new ApiError(message, response.status, payload)
+async function request<T>(path: string, { signal }: RequestOptions = {}): Promise<T> {
+  const controller = new AbortController()
+  const cancel = () => controller.abort()
+  if (signal?.aborted) cancel()
+  signal?.addEventListener('abort', cancel, { once: true })
+  const timeout = setTimeout(cancel, REQUEST_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(path, {
+      headers: { Accept: 'application/json' },
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    const contentType = response.headers.get('Content-Type') || ''
+    const payload: unknown = contentType.includes('application/json')
+      ? await response.json().catch(() => null)
+      : null
+    if (!response.ok) {
+      let message = response.status >= 500
+        ? 'The learning service is temporarily unavailable. Please try again.'
+        : response.status === 429
+          ? 'Too many requests. Please wait a moment and try again.'
+          : `Request failed (${response.status}).`
+      if (typeof payload === 'object' && payload !== null) {
+        if ('message' in payload && typeof payload.message === 'string') message = payload.message
+        else if ('error' in payload && typeof payload.error === 'string') message = payload.error
+      }
+      throw new ApiError(message, response.status, payload)
+    }
+    // A missing proxy route must not be mistaken for successful JSON data.
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+      throw new ApiError('The learning service returned an unexpected response. Please try again.', response.status, null)
+    }
+    return payload as T
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException('Request cancelled.', 'AbortError')
+    if (controller.signal.aborted) {
+      throw new ApiError('The request timed out. Please check your connection and try again.', 0, null)
+    }
+    if (error instanceof ApiError) throw error
+    throw new ApiError('The learning service is not reachable right now. Please try again.', 0, null)
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', cancel)
   }
-  return payload as T
 }
 
 export type Course = {
@@ -123,19 +155,19 @@ export type SiteProfile = {
   social_links: SocialLink[]
 }
 
-export function getCourses(params = new URLSearchParams()) {
+export function getCourses(params = new URLSearchParams(), options?: RequestOptions) {
   const query = params.toString()
-  return request<CatalogResponse>(`/api/v1/courses/${query ? `?${query}` : ''}`)
+  return request<CatalogResponse>(`/api/v1/courses/${query ? `?${query}` : ''}`, options)
 }
 
-export function getCourse(slug: string) {
-  return request<CourseDetail>(`/api/v1/courses/${encodeURIComponent(slug)}/`)
+export function getCourse(slug: string, options?: RequestOptions) {
+  return request<CourseDetail>(`/api/v1/courses/${encodeURIComponent(slug)}/`, options)
 }
 
-export function getLesson(slug: string) {
-  return request<LessonDetail>(`/api/v1/lessons/${encodeURIComponent(slug)}/`)
+export function getLesson(slug: string, options?: RequestOptions) {
+  return request<LessonDetail>(`/api/v1/lessons/${encodeURIComponent(slug)}/`, options)
 }
 
-export function getSiteProfile() {
-  return request<SiteProfile>('/api/v1/site-profile/')
+export function getSiteProfile(options?: RequestOptions) {
+  return request<SiteProfile>('/api/v1/site-profile/', options)
 }

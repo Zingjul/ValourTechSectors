@@ -1,7 +1,8 @@
-import { useEffect, useState, type PropsWithChildren } from 'react'
+import { Suspense, useEffect, useState, type PropsWithChildren } from 'react'
 import { ArrowUpRight, Menu, X } from 'lucide-react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { getSiteProfile, type SiteProfile } from '../api'
+import { LoadingState } from './States'
 
 function ScrollToTop() {
   const { pathname } = useLocation()
@@ -45,10 +46,11 @@ export function SiteLayout() {
 
   useEffect(() => {
     let active = true
-    getSiteProfile().then((data) => {
+    const controller = new AbortController()
+    getSiteProfile({ signal: controller.signal }).then((data) => {
       if (active) setProfile(data)
     }).catch(() => undefined)
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [])
 
   return (
@@ -64,7 +66,9 @@ export function SiteLayout() {
       </header>
 
       <main id="main-content" tabIndex={-1}>
-        <Outlet />
+        <Suspense fallback={<section className="section-shell detail-shell"><LoadingState label="Opening page…" /></section>}>
+          <Outlet />
+        </Suspense>
       </main>
 
       <footer className="site-footer">

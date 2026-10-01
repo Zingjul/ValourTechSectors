@@ -6,6 +6,7 @@ app_name = "valour"
 
 urlpatterns = [
     path("health/", views.health, name="health"),
+    path("ready/", views.ready, name="ready"),
     path("courses/", views.course_list, name="course-list"),
     path("courses/<slug:slug>/", views.course_detail, name="course-detail"),
     path("lessons/<slug:slug>/", views.lesson_detail, name="lesson-detail"),

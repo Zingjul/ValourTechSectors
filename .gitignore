@@ -8,6 +8,7 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.production.example
 media/
 staticfiles/
 
@@ -20,3 +21,11 @@ dist/
 .DS_Store
 .vscode/
 .idea/
+
+# Tests / deployment scratch files
+coverage/
+.coverage
+htmlcov/
+*.log
+*.dump
+backups/

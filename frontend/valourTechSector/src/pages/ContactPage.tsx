@@ -11,11 +11,12 @@ export function ContactPage() {
 
   useEffect(() => {
     let active = true
-    getSiteProfile()
+    const controller = new AbortController()
+    getSiteProfile({ signal: controller.signal })
       .then((data) => { if (active) setProfile(data) })
       .catch((reason: Error) => { if (active) setError(reason.message) })
       .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [])
 
   return (

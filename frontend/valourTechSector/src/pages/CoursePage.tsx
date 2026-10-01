@@ -15,7 +15,8 @@ export function CoursePage() {
 
   useEffect(() => {
     let active = true
-    getCourse(slug)
+    const controller = new AbortController()
+    getCourse(slug, { signal: controller.signal })
       .then((data) => { if (active) setState({ slug, course: data }) })
       .catch((reason: Error) => {
         if (!active) return
@@ -24,7 +25,7 @@ export function CoursePage() {
           : reason.message
         setState({ slug, error: message })
       })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [slug])
 
   if (isLoading) return <section className="section-shell detail-shell"><LoadingState label="Opening course…" /></section>
