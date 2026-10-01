@@ -127,17 +127,24 @@ jobs:
           curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/signin -o /tmp/signin.html
           curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/api/v1/auth/session/ | grep -q '"authenticated": false'
           curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/api/v1/auth/session/ | grep -q '"registration": "invite"'
+          # An unknown invitation link is answered about, and admits nobody.
+          curl --fail -H 'X-Forwarded-Proto: https' \
+            http://localhost:10000/api/v1/auth/invite/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/ | grep -q '"reason": "unknown"'
           # Sign-up must refuse a correctly authenticated request that carries no
-          # invitation link: a 403 from the invitation gate, not from CSRF. The
-          # Origin header has to match the host Django sees, or the CSRF check
-          # for an HTTPS request would answer first and prove nothing.
+          # invitation link: a 403 from the invitation gate, not from CSRF. Two
+          # details matter here. The Origin header has to match the host Django
+          # sees, or the CSRF check for an HTTPS request answers first and proves
+          # nothing; and the CSRF cookie is Secure in this image, so curl will not
+          # resend it over plain HTTP and it is taken out of the jar by hand.
           jar=$(mktemp)
-          token=$(curl -s -c "$jar" -H 'X-Forwarded-Proto: https' http://localhost:10000/api/v1/auth/session/ \
-            | sed -n 's/.*"csrf_token": "\([^"]*\)".*/\1/p')
+          session=$(curl -s -c "$jar" -H 'X-Forwarded-Proto: https' http://localhost:10000/api/v1/auth/session/)
+          token=$(echo "$session" | sed -n 's/.*"csrf_token": "\([^"]*\)".*/\1/p')
+          cookie=$(awk '$6 == "csrftoken" { print $7 }' "$jar")
           test -n "$token"
-          status=$(curl -s -o /tmp/signup.json -w '%{http_code}' -b "$jar" -X POST \
-            -H 'Content-Type: application/json' -H "X-CSRFToken: $token" -H 'X-Forwarded-Proto: https' \
-            -H 'Origin: https://localhost:10000' \
+          test -n "$cookie"
+          status=$(curl -s -o /tmp/signup.json -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -H "X-CSRFToken: $token" -b "csrftoken=$cookie" \
+            -H 'X-Forwarded-Proto: https' -H 'Origin: https://localhost:10000' \
             -d '{"email":"smoke@example.com","phone_number":"+2348031234567","password":"smoke-test-password"}' \
             http://localhost:10000/api/v1/auth/signup/)
           test "$status" = 403
