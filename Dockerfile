@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build the browser bundle separately; Node and dev dependencies do not ship.
-FROM node:22-alpine AS frontend
+FROM node:26-alpine AS frontend
 WORKDIR /frontend
 COPY frontend/valourTechSector/package.json frontend/valourTechSector/package-lock.json ./
 RUN npm ci
