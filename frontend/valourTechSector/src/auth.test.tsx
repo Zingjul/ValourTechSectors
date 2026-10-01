@@ -6,6 +6,7 @@ import {
   ApiError,
   getCourse,
   getCourses,
+  getInviteStatus,
   getLesson,
   getSession,
   getSiteProfile,
@@ -14,6 +15,7 @@ import {
   signUpAccount,
   type CatalogResponse,
   type CourseDetail,
+  type InviteStatus,
   type LessonDetail,
   type SessionResponse,
   type SiteProfile,
@@ -23,9 +25,11 @@ import { safeNextPath } from './auth/nextPath'
 vi.mock('./api', async (importOriginal) => ({
   ...await importOriginal<typeof import('./api')>(),
   getCourses: vi.fn(), getCourse: vi.fn(), getLesson: vi.fn(), getSession: vi.fn(), getSiteProfile: vi.fn(),
+  getInviteStatus: vi.fn(),
   signUpAccount: vi.fn(), signInAccount: vi.fn(), signOutAccount: vi.fn(),
 }))
 
+const INVITE = 'Xk3nVb8Qr2LmZp7Tw4Ys6Df1Gh9Jc0Ua5EiOoXuNbMk'
 const catalog: CatalogResponse = {
   count: 1, page: 1, pages: 1, has_next: false, has_previous: false,
   results: [{
@@ -45,12 +49,16 @@ const profile: SiteProfile = {
   whatsapp_url: '', contact_note: '', social_links: [],
 }
 const signedOut: SessionResponse = {
-  authenticated: false, learner: null, content_access: 'lessons', sign_in_path: '/signin', csrf_token: 'token-1',
+  authenticated: false, learner: null, content_access: 'lessons', registration: 'invite',
+  sign_in_path: '/signin', csrf_token: 'token-1',
 }
 const signedIn: SessionResponse = {
   authenticated: true,
   learner: { email: 'ada@example.com', phone_number: '+2348031234567', member_since: '2026-10-01', last_sign_in: '' },
-  content_access: 'lessons', sign_in_path: '/signin', csrf_token: 'token-2',
+  content_access: 'lessons', registration: 'invite', sign_in_path: '/signin', csrf_token: 'token-2',
+}
+const inviteReady: InviteStatus = {
+  registration: 'invite', valid: true, message: 'This invitation link is ready.', expires_at: null,
 }
 
 function renderRoute(path: string) {
@@ -59,6 +67,11 @@ function renderRoute(path: string) {
 
 function navigation() {
   return within(screen.getByRole('navigation', { name: 'Main navigation' }))
+}
+
+/** The sign-up page only shows a form when the address bar carries a link. */
+function invitedRoute(query = '') {
+  return `/signup?invite=${INVITE}${query}`
 }
 
 async function fillSignUp(details: Partial<Record<'email' | 'phone' | 'password' | 'confirm' | 'remember', string | boolean>> = {}) {
@@ -75,6 +88,7 @@ beforeEach(() => {
   vi.mocked(getCourse).mockResolvedValue(course)
   vi.mocked(getLesson).mockResolvedValue(lesson)
   vi.mocked(getSiteProfile).mockResolvedValue(profile)
+  vi.mocked(getInviteStatus).mockResolvedValue(inviteReady)
   vi.mocked(signUpAccount).mockResolvedValue(signedIn)
   vi.mocked(signInAccount).mockResolvedValue(signedIn)
   vi.mocked(signOutAccount).mockResolvedValue(signedOut)
@@ -99,25 +113,125 @@ describe('safeNextPath', () => {
   })
 })
 
-describe('sign-up', () => {
-  it('records an email address and phone number, then opens the lesson the learner wanted', async () => {
-    renderRoute('/signup?next=%2Flessons%2Fohms')
+describe('invitation links', () => {
+  it('explains that registration needs a link and shows no form', async () => {
+    renderRoute('/signup')
+
+    expect(await screen.findByText('Ask the team for your invitation link')).toBeInTheDocument()
+    // Scoped to the panel: the footer offers a way to request access too.
+    const panel = screen.getByRole('status')
+    expect(within(panel).getByRole('link', { name: /Request access/ })).toHaveAttribute('href', '/contact')
+    expect(within(panel).getByRole('link', { name: 'I already have an account' })).toHaveAttribute('href', '/signin')
+    expect(screen.queryByLabelText('Email address')).not.toBeInTheDocument()
+    expect(getInviteStatus).not.toHaveBeenCalled()
+  })
+
+  it('checks a link before showing the form, and spends it on that form', async () => {
+    renderRoute(invitedRoute('&next=%2Flessons%2Fohms'))
 
     await fillSignUp({ email: '  Ada@Example.com ' })
     fireEvent.click(screen.getByRole('button', { name: /Create my account/ }))
 
+    expect(getInviteStatus).toHaveBeenCalledWith(INVITE, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     await waitFor(() => expect(signUpAccount).toHaveBeenCalledWith({
       email: 'Ada@Example.com',
       phone_number: '+234 803 123 4567',
       password: 'resistor-code',
       confirm_password: 'resistor-code',
       remember: false,
+      invite: INVITE,
     }, 'token-1'))
     expect(await screen.findByRole('heading', { name: 'Resistance in ohms' })).toBeInTheDocument()
   })
 
-  it('checks the details in the browser before spending a round trip', async () => {
+  it('says plainly that a link was already used, instead of showing a form', async () => {
+    vi.mocked(getInviteStatus).mockResolvedValue({
+      registration: 'invite', valid: false, reason: 'used',
+      message: 'That invitation link has already been used. Sign in, or ask the team for a new link.',
+    })
+    renderRoute(invitedRoute())
+
+    expect(await screen.findByText('That link has already been used')).toBeInTheDocument()
+    expect(screen.getByText('That invitation link has already been used. Sign in, or ask the team for a new link.'))
+      .toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Request a new link/ })).toHaveAttribute('href', '/contact')
+    expect(screen.queryByLabelText('Email address')).not.toBeInTheDocument()
+    expect(signUpAccount).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['expired', 'That link has expired'],
+    ['revoked', 'That link was withdrawn'],
+    ['unknown', 'That link is not one of ours'],
+  ])('explains a %s link', async (reason, heading) => {
+    vi.mocked(getInviteStatus).mockResolvedValue({
+      registration: 'invite', valid: false, reason: reason as InviteStatus['reason'], message: 'Ask the team.',
+    })
+    renderRoute(invitedRoute())
+
+    expect(await screen.findByText(heading)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Email address')).not.toBeInTheDocument()
+  })
+
+  it('tells a learner when the link expires', async () => {
+    vi.mocked(getInviteStatus).mockResolvedValue({ ...inviteReady, expires_at: '2026-10-15T09:00:00+01:00' })
+    renderRoute(invitedRoute())
+
+    await screen.findByLabelText('Email address')
+    expect(screen.getByText(/This link is valid until/)).toBeInTheDocument()
+  })
+
+  it('offers a way to check again when the check does not answer', async () => {
+    vi.mocked(getInviteStatus)
+      .mockRejectedValueOnce(new ApiError('The learning service is not reachable right now.', 0, null))
+      .mockResolvedValueOnce(inviteReady)
+    renderRoute(invitedRoute())
+
+    expect(await screen.findByText('The invitation check did not answer')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Email address')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Check my link again/ }))
+
+    expect(await screen.findByLabelText('Email address')).toBeInTheDocument()
+    expect(getInviteStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('lets the owner open registration again without a code change', async () => {
+    vi.mocked(getSession).mockResolvedValue({ ...signedOut, registration: 'open' })
     renderRoute('/signup')
+
+    await fillSignUp()
+    fireEvent.click(screen.getByRole('button', { name: /Create my account/ }))
+
+    expect(getInviteStatus).not.toHaveBeenCalled()
+    await waitFor(() => expect(signUpAccount).toHaveBeenCalledWith({
+      email: 'ada@example.com',
+      phone_number: '+234 803 123 4567',
+      password: 'resistor-code',
+      confirm_password: 'resistor-code',
+      remember: false,
+    }, 'token-1'))
+  })
+
+  it('explains a link the server refuses at submit time', async () => {
+    vi.mocked(signUpAccount).mockRejectedValue(new ApiError(
+      'That invitation link has already been used. Sign in, or ask the team for a new link.', 403,
+      { invite_invalid: true, reason: 'used' },
+    ))
+    renderRoute(invitedRoute())
+
+    await fillSignUp()
+    fireEvent.click(screen.getByRole('button', { name: /Create my account/ }))
+
+    expect(await screen.findByText(
+      'That invitation link has already been used. Sign in, or ask the team for a new link.',
+    )).toBeInTheDocument()
+  })
+})
+
+describe('sign-up form', () => {
+  it('checks the details in the browser before spending a round trip', async () => {
+    renderRoute(invitedRoute())
 
     await fillSignUp({ email: 'ada@', phone: '12', password: '1234567', confirm: '1234567' })
     fireEvent.click(screen.getByRole('button', { name: /Create my account/ }))
@@ -133,7 +247,7 @@ describe('sign-up', () => {
     vi.mocked(signUpAccount).mockRejectedValue(new ApiError('Please correct the highlighted fields.', 400, {
       errors: { phone_number: ['Enter a phone number with 7 to 15 digits.'] },
     }))
-    renderRoute('/signup')
+    renderRoute(invitedRoute())
 
     await fillSignUp()
     fireEvent.click(screen.getByRole('button', { name: /Create my account/ }))
@@ -147,7 +261,7 @@ describe('sign-up', () => {
       account_exists: true,
       errors: { email: ['That email address already has an account.'] },
     }))
-    renderRoute('/signup')
+    renderRoute(invitedRoute())
 
     await fillSignUp()
     fireEvent.click(screen.getByRole('button', { name: /Create my account/ }))
@@ -157,7 +271,7 @@ describe('sign-up', () => {
   })
 
   it('keeps the password hidden until the learner asks to see it', async () => {
-    renderRoute('/signup')
+    renderRoute(invitedRoute())
 
     const password = await screen.findByLabelText('Password')
     expect(password).toHaveAttribute('type', 'password')
@@ -227,15 +341,25 @@ describe('sign-in', () => {
     expect(await screen.findByRole('heading', { name: 'Resistance in ohms' })).toBeInTheDocument()
     expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
   })
+
+  it('points a visitor without an account at requesting a link, not at a sign-up page', async () => {
+    renderRoute('/signin')
+
+    await screen.findByLabelText('Email address')
+    expect(screen.queryByRole('link', { name: /Create a free account/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Ask the team for your link/ })).toHaveAttribute('href', '/contact')
+    expect(screen.getByRole('link', { name: /Ask the team for yours/ })).toHaveAttribute('href', '/contact')
+  })
 })
 
 describe('header account controls', () => {
-  it('offers a visitor a way in', async () => {
+  it('offers a visitor one way in, because accounts come from a link', async () => {
     renderRoute('/')
 
-    await screen.findByRole('link', { name: /Create free account/ })
-    expect(navigation().getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/signin')
-    expect(navigation().getByRole('link', { name: /Create free account/ })).toHaveAttribute('href', '/signup')
+    expect(await screen.findByRole('link', { name: 'Request access' })).toHaveAttribute('href', '/contact')
+    expect(navigation().getByRole('link', { name: /Sign in/ })).toHaveAttribute('href', '/signin')
+    expect(screen.queryByRole('link', { name: /Create free account/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Create account/ })).not.toBeInTheDocument()
   })
 
   it('shows who is signed in and signs them out with the current token', async () => {
@@ -243,11 +367,11 @@ describe('header account controls', () => {
     renderRoute('/')
 
     expect(await screen.findByText('ada@example.com')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /Create free account/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Sign in/ })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /Sign out/ }))
     await waitFor(() => expect(signOutAccount).toHaveBeenCalledWith('token-2'))
-    expect(await screen.findByRole('link', { name: /Create free account/ })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Request access' })).toBeInTheDocument()
   })
 })
 
@@ -257,6 +381,6 @@ describe('session resilience', () => {
     renderRoute('/courses')
 
     expect(await screen.findByRole('heading', { name: 'Resistors', level: 3 })).toBeInTheDocument()
-    expect(navigation().getByRole('link', { name: /Create free account/ })).toBeInTheDocument()
+    expect(navigation().getByRole('link', { name: /Sign in/ })).toBeInTheDocument()
   })
 })

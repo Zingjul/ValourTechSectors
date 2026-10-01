@@ -43,6 +43,11 @@ services:
       # open | lessons | everything. Decides how much of the site an account opens.
       - key: LEARNER_CONTENT_ACCESS
         value: "lessons"
+      # invite = registration only through a single-use link issued in /admin/.
+      - key: LEARNER_REGISTRATION
+        value: "invite"
+      - key: LEARNER_INVITE_VALID_DAYS
+        value: "14"
       - key: LEARNER_PASSWORD_MIN_LENGTH
         value: "8"
       - key: LEARNER_LOGIN_FAILURE_LIMIT

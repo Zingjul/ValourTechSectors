@@ -7,12 +7,17 @@ test module.
 import json
 
 from .auth_views import LEARNER_AUTH_BACKEND
-from .models import Learner
+from .models import Learner, RegistrationInvite, default_invite_expiry
 
 LEARNER_EMAIL = "ada@example.com"
 LEARNER_PHONE = "+234 803 123 4567"
 LEARNER_PHONE_NORMALIZED = "+2348031234567"
 LEARNER_PASSWORD = "resistor-colour-code"
+
+# Sign-up spends an invitation link, so tests that register successfully need a
+# fresh one each time. Pass NO_INVITE to leave the token out of a payload.
+NO_INVITE = object()
+_UNSET = object()
 
 
 def json_body(payload):
@@ -21,6 +26,17 @@ def json_body(payload):
 
 def create_learner(email=LEARNER_EMAIL, phone_number=LEARNER_PHONE, password=LEARNER_PASSWORD):
     return Learner.objects.create_user(email=email, phone_number=phone_number, password=password)
+
+
+def create_invite(note="", expires_at=_UNSET, created_by=None):
+    """A fresh, unused registration link.
+
+    ``expires_at=None`` makes one that never expires on its own; leaving it out
+    applies the configured default, the way the admin does.
+    """
+    if expires_at is _UNSET:
+        expires_at = default_invite_expiry()
+    return RegistrationInvite.objects.create(note=note, expires_at=expires_at, created_by=created_by)
 
 
 def sign_in(client, learner=None, password=LEARNER_PASSWORD):

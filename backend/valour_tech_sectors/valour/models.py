@@ -1,3 +1,4 @@
+import secrets
 from datetime import timedelta
 from pathlib import PurePosixPath
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -383,3 +384,124 @@ class Learner(AbstractBaseUser):
         self.failed_login_attempts = 0
         self.locked_until = None
         self.save(update_fields=["failed_login_attempts", "locked_until", "updated_at"])
+
+
+def default_invite_expiry():
+    """When a freshly generated invitation link stops working.
+
+    ``LEARNER_INVITE_VALID_DAYS`` of 0 means links stay usable until they are
+    spent or revoked.
+    """
+    days = settings.LEARNER_INVITE_VALID_DAYS
+    if days <= 0:
+        return None
+    return timezone.now() + timedelta(days=days)
+
+
+class RegistrationInviteQuerySet(models.QuerySet):
+    def available(self):
+        """Links that could still register someone right now."""
+        return self.filter(is_revoked=False, used_by__isnull=True).exclude(expires_at__lt=timezone.now())
+
+
+class RegistrationInvite(models.Model):
+    """A single-use link that admits exactly one person.
+
+    Staff generate links in the admin and send them to whoever they choose. A
+    link is spent the moment it creates an account, so forwarding it cannot
+    admit a second person, and it can be revoked or left to expire.
+
+    Tokens are stored as generated (256 bits of randomness) so a link can be
+    copied again from the admin while it is still unused. They are never shown
+    on the public site, and the admin-only ``note`` stays out of every API
+    response.
+    """
+
+    token = models.CharField(max_length=64, unique=True, editable=False, db_index=True)
+    note = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="A private reminder for staff, for example who this link was sent to. Never shown on the site.",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="registration_invites",
+        editable=False,
+        help_text="The staff account that generated this link.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Leave empty for a link that stays usable until it is spent or revoked.",
+    )
+    is_revoked = models.BooleanField(default=False, help_text="A revoked link stops working at once.")
+    used_by = models.OneToOneField(
+        "Learner",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="registration_invite",
+        editable=False,
+        help_text="The account this link created. A spent link cannot be used again.",
+    )
+    used_at = models.DateTimeField(null=True, blank=True, editable=False)
+
+    objects = RegistrationInviteQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("-created_at",)
+        verbose_name = "registration invite"
+        verbose_name_plural = "registration invites"
+
+    def __str__(self):
+        return self.note or f"Invite {self.short_token}"
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = secrets.token_urlsafe(32)
+        super().save(*args, **kwargs)
+
+    @property
+    def short_token(self):
+        return f"{self.token[:8]}…" if self.token else ""
+
+    @property
+    def is_used(self):
+        return self.used_by_id is not None
+
+    @property
+    def is_expired(self):
+        return bool(self.expires_at and self.expires_at <= timezone.now())
+
+    @property
+    def is_available(self):
+        return not (self.is_revoked or self.is_used or self.is_expired)
+
+    @property
+    def status(self):
+        if self.is_revoked:
+            return "revoked"
+        if self.is_used:
+            return "used"
+        if self.is_expired:
+            return "expired"
+        return "available"
+
+    @property
+    def registration_path(self):
+        """The relative path a link opens, so it works behind any hostname."""
+        return f"/signup?invite={self.token}"
+
+    def registration_url(self, request):
+        return request.build_absolute_uri(self.registration_path)
+
+    def consume(self, learner):
+        """Spend the link on the account it just created."""
+        self.used_by = learner
+        self.used_at = timezone.now()
+        self.save(update_fields=["used_by", "used_at"])
+        return self

@@ -180,6 +180,13 @@ LEARNER_LOGIN_LOCKOUT_MINUTES = env_int("LEARNER_LOGIN_LOCKOUT_MINUTES", 15, min
 # Without "keep me signed in" a learner session ends with the browser, matching
 # the staff policy. The opt-in may not outlast the longest sensible study break.
 LEARNER_SESSION_REMEMBER_DAYS = env_int("LEARNER_SESSION_REMEMBER_DAYS", 30, minimum=1, maximum=90)
+# Registration is by invitation: staff generate a single-use link in the admin
+# and send it to the person they want to admit, and /signup accepts nothing
+# else. "open" lets anyone register without a link.
+LEARNER_REGISTRATION = env_choice("LEARNER_REGISTRATION", "invite", {"invite", "open"})
+# How long a generated link stays usable before it must be replaced. 0 keeps a
+# link usable until it is spent or revoked.
+LEARNER_INVITE_VALID_DAYS = env_int("LEARNER_INVITE_VALID_DAYS", 14, minimum=0, maximum=365)
 
 # Database-backed lockouts work across workers and deploys. Lock by username,
 # not spoofable forwarded IP headers; do not retain staff IP addresses.

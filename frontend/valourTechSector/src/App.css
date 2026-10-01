@@ -617,6 +617,18 @@
 .lesson-row.needs-sign-in .lesson-trailing { color: #6f8a72; }
 .lesson-row.needs-sign-in .lesson-row-main > span { color: #6f8a72; }
 
+/* Invitation-only registration: the states /signup shows when a link is missing,
+   spent, expired, or simply could not be checked. */
+.invite-state { padding: 19px; display: flex; align-items: flex-start; gap: 14px; background: #eef0e6; border: 1px solid #d8dccb; }
+.invite-state.is-refused { background: #f5ece5; border-color: #e2cfc2; }
+.invite-state-icon { width: 32px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; color: #3f6151; background: #dde2d3; }
+.invite-state.is-refused .invite-state-icon { color: #8d5a3c; background: #eedfd2; }
+.invite-state strong { display: block; margin: 2px 0 6px; color: #2f463a; font-size: 12px; }
+.invite-state.is-refused strong { color: #6d4531; }
+.invite-state p { margin: 0; color: #5c6b5f; font-size: 12px; line-height: 1.65; }
+.invite-state .signin-actions { margin-top: 15px; }
+.invite-expiry { margin: -8px 0 18px; padding: 9px 11px; color: #56655a; background: #f2f3eb; border-left: 3px solid #a9b79c; font-family: var(--mono); font-size: 10px; line-height: 1.6; }
+
 /* The account styles keep their own breakpoints so they stay in one place. */
 @media (max-width: 1080px) {
   .auth-content { gap: 48px; }
@@ -637,6 +649,8 @@
   .auth-field > label { font-size: 8px; }
   .auth-submit { min-height: 46px; }
   .signin-notice { padding: 15px; gap: 11px; }
+  .invite-state { padding: 16px; gap: 11px; }
+  .invite-expiry { margin: -6px 0 15px; }
   .signin-actions .button { flex: 1 1 auto; min-height: 42px; }
   .account-chip { max-width: 150px; }
   .primary-navigation .account-chip { max-width: none; min-height: 44px; justify-content: flex-start; background: transparent; border: 0; border-bottom: 1px solid #ece9df; }

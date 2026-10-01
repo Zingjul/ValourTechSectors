@@ -295,9 +295,10 @@ class SupabaseRowLevelSecurityTests(TestCase):
     @skipUnless(connection.vendor == "postgresql", "Supabase RLS behavior requires PostgreSQL")
     def test_browser_data_api_role_cannot_read_django_tables_without_a_policy(self):
         role = "valour_rls_test_anon"
-        # valour_learner holds sign-up records, so it needs the same protection
-        # that migration 0004 gave the tables that already existed.
-        for table in ("valour_course", "valour_learner"):
+        # valour_learner holds sign-up records and valour_registrationinvite the
+        # links that admit people, so both need the protection that migration
+        # 0004 gave the tables that already existed.
+        for table in ("valour_course", "valour_learner", "valour_registrationinvite"):
             with self.subTest(table=table), connection.cursor() as cursor:
                 cursor.execute(f"CREATE ROLE {role} NOLOGIN")
                 try:
@@ -460,6 +461,8 @@ class ProductionSettingsTests(SimpleTestCase):
             {"LEARNER_CONTENT_ACCESS": "members"}, {"LEARNER_CONTENT_ACCESS": ""},
             {"LEARNER_LOGIN_FAILURE_LIMIT": "2"}, {"LEARNER_LOGIN_LOCKOUT_MINUTES": "0"},
             {"LEARNER_PASSWORD_MIN_LENGTH": "6"}, {"LEARNER_SESSION_REMEMBER_DAYS": "0"},
+            {"LEARNER_REGISTRATION": "anyone"}, {"LEARNER_REGISTRATION": ""},
+            {"LEARNER_INVITE_VALID_DAYS": "-1"}, {"LEARNER_INVITE_VALID_DAYS": "400"},
         ):
             with self.subTest(values=values):
                 result = self.load_settings(**values)
@@ -471,6 +474,8 @@ class ProductionSettingsTests(SimpleTestCase):
             "import dotenv; dotenv.load_dotenv = lambda *args, **kwargs: False; "
             "import json; from django.conf import settings as s; "
             "print(json.dumps({'access': s.LEARNER_CONTENT_ACCESS, "
+            "'registration': s.LEARNER_REGISTRATION, "
+            "'invite_days': s.LEARNER_INVITE_VALID_DAYS, "
             "'backends': s.AUTHENTICATION_BACKENDS, "
             "'staff_minimum': s.AUTH_PASSWORD_VALIDATORS[1]['OPTIONS']['min_length'], "
             "'learner_minimum': s.LEARNER_PASSWORD_MIN_LENGTH}))"
@@ -482,6 +487,9 @@ class ProductionSettingsTests(SimpleTestCase):
         self.assertEqual(data["access"], "lessons")
         self.assertEqual(data["staff_minimum"], 12)
         self.assertEqual(data["learner_minimum"], 8)
+        # Registration is by invitation unless the owner says otherwise.
+        self.assertEqual(data["registration"], "invite")
+        self.assertEqual(data["invite_days"], 14)
         # django-axes stays first so admin lockouts keep working, and the learner
         # backend runs before ModelBackend for email sign-ins.
         self.assertEqual(

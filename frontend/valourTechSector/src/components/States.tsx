@@ -1,5 +1,6 @@
 import { AlertCircle, ArrowRight, BookOpen, KeyRound, LockKeyhole } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { useAuth } from '../auth/useAuth'
 import { withNext } from '../auth/nextPath'
 
 export function LoadingState({ label = 'Loading…' }: { label?: string }) {
@@ -30,7 +31,13 @@ export function LockedNotice({ message }: { message?: string }) {
   )
 }
 
+/**
+ * What a visitor sees instead of lesson content. Registration is by invitation,
+ * so the second button asks for access rather than pointing at a sign-up page
+ * that would refuse them.
+ */
 export function SignInNotice({ message, next, lessonTitle }: { message?: string; next: string; lessonTitle?: string }) {
+  const { registration } = useAuth()
   return (
     <aside className="signin-notice" role="status">
       <span className="signin-icon"><KeyRound size={18} aria-hidden="true" /></span>
@@ -39,7 +46,11 @@ export function SignInNotice({ message, next, lessonTitle }: { message?: string;
         <p>{message || 'Lesson notes, videos, and downloads are for signed-in learners.'}</p>
         <div className="signin-actions">
           <Link className="button button-primary" to={withNext('/signin', next)}>Sign in <ArrowRight size={15} aria-hidden="true" /></Link>
-          <Link className="button button-outline" to={withNext('/signup', next)}>Create a free account</Link>
+          {registration === 'open' ? (
+            <Link className="button button-outline" to={withNext('/signup', next)}>Create a free account</Link>
+          ) : (
+            <Link className="button button-outline" to="/contact">Request access</Link>
+          )}
         </div>
       </div>
     </aside>

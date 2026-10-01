@@ -15,7 +15,7 @@ const ROUTE_TITLES: Record<string, string> = {
   '/courses': 'Courses',
   '/contact': 'Contact',
   '/signin': 'Sign in',
-  '/signup': 'Create account',
+  '/signup': 'Register',
 }
 
 function routeTitle(pathname: string) {

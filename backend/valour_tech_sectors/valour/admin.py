@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
@@ -8,7 +10,18 @@ from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.html import format_html
 
-from .models import Course, Learner, Lesson, Material, Section, SiteProfile, SocialLink, VideoLink
+from .models import (
+    Course,
+    Learner,
+    Lesson,
+    Material,
+    RegistrationInvite,
+    Section,
+    SiteProfile,
+    SocialLink,
+    VideoLink,
+    default_invite_expiry,
+)
 from .validators import validate_learner_password
 
 
@@ -198,6 +211,7 @@ class LearnerAdmin(admin.ModelAdmin):
         "failed_login_attempts",
         "locked_until",
         "password_link",
+        "invite_record",
     )
     fieldsets = (
         ("Sign-up details", {"fields": ("email", "phone_number")}),
@@ -209,7 +223,10 @@ class LearnerAdmin(admin.ModelAdmin):
                 "classes": ("collapse",),
             },
         ),
-        ("Record kept since", {"fields": ("created_at", "updated_at"), "classes": ("collapse",)}),
+        (
+            "Record kept since",
+            {"fields": ("created_at", "updated_at", "invite_record"), "classes": ("collapse",)},
+        ),
     )
     actions = ("unlock_sign_in",)
 
@@ -246,6 +263,23 @@ class LearnerAdmin(admin.ModelAdmin):
             url,
         )
 
+    @admin.display(description="Invitation")
+    def invite_record(self, learner):
+        """Which link admitted this learner, so access can be traced back to staff."""
+        # A reverse one-to-one raises an AttributeError subclass when unused, so
+        # getattr is enough to ask "was there one?".
+        invite = getattr(learner, "registration_invite", None)
+        if invite is None:
+            return "No invitation recorded for this account."
+        details = [f"Link {invite.short_token}"]
+        if invite.used_at:
+            details.append(f"used {timezone.localtime(invite.used_at):%d %b %Y, %H:%M}")
+        if invite.note:
+            details.append(f"note: {invite.note}")
+        if invite.created_by_id:
+            details.append(f"issued by {invite.created_by}")
+        return " · ".join(details)
+
     @admin.action(description="Unlock sign-in and clear failed attempts")
     def unlock_sign_in(self, request, queryset):
         unlocked = 0
@@ -280,3 +314,161 @@ class LearnerAdmin(admin.ModelAdmin):
             "has_change_permission": self.has_change_permission(request, learner),
         }
         return render(request, "admin/valour/learner/set_password.html", context)
+
+
+class RegistrationInviteForm(forms.ModelForm):
+    """The add form: a note, an expiry, and a revoke switch.
+
+    The token, who generated it, and who used it are all managed by the app, so
+    they are read-only everywhere and never typed by hand.
+    """
+
+    class Meta:
+        model = RegistrationInvite
+        fields = ("note", "expires_at", "is_revoked")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk is None and not self.initial.get("expires_at"):
+            self.initial["expires_at"] = default_invite_expiry()
+
+
+@admin.register(RegistrationInvite)
+class RegistrationInviteAdmin(admin.ModelAdmin):
+    """Where the owner hands out access: one link, one registration.
+
+    A link is generated here, copied, and sent privately (WhatsApp, email, in
+    person). It admits exactly one person and then stops working, so a forwarded
+    link cannot open the site to whoever receives it second.
+    """
+
+    form = RegistrationInviteForm
+    list_display = ("invite_path", "note", "status_badge", "created_at", "expires_at", "used_by")
+    list_filter = ("is_revoked", ("used_by", admin.EmptyFieldListFilter), "created_at")
+    search_fields = ("note", "token", "used_by__email", "used_by__phone_number")
+    search_help_text = "Search the private note, the link token, or the learner a link admitted."
+    date_hierarchy = "created_at"
+    ordering = ("-created_at",)
+    readonly_fields = ("token", "invite_path", "created_by", "created_at", "used_by", "used_at")
+    fieldsets = (
+        ("Invitation link", {"fields": ("invite_path", "token")}),
+        ("About this link", {"fields": ("note", "expires_at", "is_revoked")}),
+        (
+            "Record",
+            {
+                "fields": ("created_at", "created_by", "used_by", "used_at"),
+                "classes": ("collapse",),
+            },
+        ),
+    )
+    actions = ("revoke_invites", "extend_invites")
+    change_list_template = "admin/valour/registrationinvite/change_list.html"
+    change_form_template = "admin/valour/registrationinvite/change_form.html"
+
+    class Media:
+        css = {"all": ("valour/admin/invites.css",)}
+
+    def get_urls(self):
+        # The generate shortcut must be matched before the "<path:object_id>"
+        # routes Django adds below it.
+        return [
+            path(
+                "generate/",
+                self.admin_site.admin_view(self.generate_invite),
+                name="valour_registrationinvite_generate",
+            ),
+            *super().get_urls(),
+        ]
+
+    @admin.display(description="Invitation link")
+    def invite_path(self, invite):
+        return format_html("/signup?invite={}…", invite.token[:12])
+
+    @admin.display(description="Status")
+    def status_badge(self, invite):
+        labels = {"available": "Available", "used": "Used", "expired": "Expired", "revoked": "Revoked"}
+        return format_html(
+            '<span class="invite-status invite-status--{}">{}</span>', invite.status, labels[invite.status]
+        )
+
+    def save_model(self, request, obj, form, change):
+        if not change and obj.created_by_id is None and request.user.is_authenticated:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+    def has_delete_permission(self, request, obj=None):
+        # A spent link is the record of how an account was admitted, so it stays.
+        if obj is not None and obj.is_used:
+            return False
+        return super().has_delete_permission(request, obj)
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        """Put the copyable link, and what it can still do, on the invite page."""
+        invite = self.get_object(request, object_id)
+        context = dict(extra_context or {})
+        if invite is not None:
+            context["invite_url"] = invite.registration_url(request)
+            context["invite_available"] = invite.is_available
+            context["invite_help"] = self._invite_help(invite)
+        return super().change_view(request, object_id, form_url, context)
+
+    def _invite_help(self, invite):
+        if invite.status == "used":
+            learner = invite.used_by
+            used_at = timezone.localtime(invite.used_at).strftime("%d %b %Y, %H:%M") if invite.used_at else ""
+            return f"This link already registered {learner} {used_at}. Generate another link for anyone else.".strip()
+        if invite.status == "expired":
+            expired = timezone.localtime(invite.expires_at).strftime("%d %b %Y, %H:%M") if invite.expires_at else ""
+            return f"This link expired {expired} and no longer registers anyone. Use the extend action, or generate a new one."
+        if invite.status == "revoked":
+            return "This link was revoked and no longer registers anyone."
+        if invite.expires_at:
+            until = timezone.localtime(invite.expires_at).strftime("%d %b %Y, %H:%M")
+            return f"It registers one person, then stops working. Send it privately — anyone holding it can use it until {until}."
+        return "It registers one person, then stops working. Send it privately — anyone holding it can use it."
+
+    def generate_invite(self, request):
+        """Make one fresh link and land on its page, where it can be copied."""
+        if not self.has_add_permission(request):
+            raise PermissionDenied
+        invite = RegistrationInvite.objects.create(
+            created_by=request.user if request.user.is_authenticated else None,
+            expires_at=default_invite_expiry(),
+        )
+        url = invite.registration_url(request)
+        self.message_user(
+            request,
+            format_html(
+                'Invitation link ready: <a href="{}">{}</a> It registers one person, then stops working.',
+                url,
+                url,
+            ),
+            messages.SUCCESS,
+        )
+        return HttpResponseRedirect(
+            reverse(
+                "admin:valour_registrationinvite_change", args=[invite.pk], current_app=self.admin_site.name
+            )
+        )
+
+    @admin.action(description="Revoke selected unused links")
+    def revoke_invites(self, request, queryset):
+        revoked = queryset.filter(is_revoked=False, used_by__isnull=True).update(is_revoked=True)
+        if revoked:
+            self.message_user(request, f"{revoked} unused link(s) revoked.", messages.SUCCESS)
+        else:
+            self.message_user(
+                request,
+                "Nothing to revoke: those links are already revoked or have registered someone.",
+                messages.WARNING,
+            )
+
+    @admin.action(description="Give selected unused links the full validity again")
+    def extend_invites(self, request, queryset):
+        days = settings.LEARNER_INVITE_VALID_DAYS or 14
+        expiry = timezone.now() + timedelta(days=days)
+        extended = queryset.filter(used_by__isnull=True).update(expires_at=expiry)
+        if extended:
+            self.message_user(request, f"{extended} link(s) now valid until {timezone.localtime(expiry):%d %b %Y}.", messages.SUCCESS)
+        else:
+            self.message_user(request, "Those links have already registered someone.", messages.WARNING)

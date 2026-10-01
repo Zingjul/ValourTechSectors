@@ -1,5 +1,5 @@
 import { createContext } from 'react'
-import type { ContentAccess, Learner, SignInCredentials, SignUpDetails } from '../api'
+import type { ContentAccess, Learner, RegistrationMode, SignInCredentials, SignUpDetails } from '../api'
 
 export type AuthStatus = 'loading' | 'ready'
 
@@ -9,6 +9,8 @@ export type AuthContextValue = {
   learner: Learner | null
   isAuthenticated: boolean
   contentAccess: ContentAccess
+  /** 'invite' means the sign-up form only works with a link from the owner. */
+  registration: RegistrationMode
   signInPath: string
   /** Posted back as X-CSRFToken; the cookie itself stays HttpOnly. */
   csrfToken: string

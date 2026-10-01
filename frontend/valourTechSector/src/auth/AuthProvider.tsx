@@ -6,6 +6,7 @@ import {
   signUpAccount,
   type ContentAccess,
   type Learner,
+  type RegistrationMode,
   type SessionResponse,
   type SignInCredentials,
   type SignUpDetails,
@@ -24,6 +25,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [status, setStatus] = useState<AuthContextValue['status']>('loading')
   const [learner, setLearner] = useState<Learner | null>(null)
   const [contentAccess, setContentAccess] = useState<ContentAccess>('lessons')
+  const [registration, setRegistration] = useState<RegistrationMode>('invite')
   const [signInPath, setSignInPath] = useState('/signin')
   const [csrfToken, setCsrfToken] = useState('')
   const mounted = useRef(true)
@@ -31,6 +33,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const applySession = useCallback((session: SessionResponse) => {
     setLearner(session.learner)
     setContentAccess(session.content_access)
+    setRegistration(session.registration || 'invite')
     setSignInPath(session.sign_in_path || '/signin')
     // Sign-up, sign-in, and sign-out each rotate the CSRF secret, so the browser
     // has to take the new token instead of keeping the one it started with.
@@ -80,12 +83,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
     learner,
     isAuthenticated: learner !== null,
     contentAccess,
+    registration,
     signInPath,
     csrfToken,
     signIn,
     signUp,
     signOut,
-  }), [status, learner, contentAccess, signInPath, csrfToken, signIn, signUp, signOut])
+  }), [status, learner, contentAccess, registration, signInPath, csrfToken, signIn, signUp, signOut])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

@@ -126,6 +126,23 @@ jobs:
           grep -q '/static/site/assets/' /tmp/site.html
           curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/signin -o /tmp/signin.html
           curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/api/v1/auth/session/ | grep -q '"authenticated": false'
+          curl --fail -H 'X-Forwarded-Proto: https' http://localhost:10000/api/v1/auth/session/ | grep -q '"registration": "invite"'
+          # Sign-up must refuse a correctly authenticated request that carries no
+          # invitation link: a 403 from the invitation gate, not from CSRF. The
+          # Origin header has to match the host Django sees, or the CSRF check
+          # for an HTTPS request would answer first and prove nothing.
+          jar=$(mktemp)
+          token=$(curl -s -c "$jar" -H 'X-Forwarded-Proto: https' http://localhost:10000/api/v1/auth/session/ \
+            | sed -n 's/.*"csrf_token": "\([^"]*\)".*/\1/p')
+          test -n "$token"
+          status=$(curl -s -o /tmp/signup.json -w '%{http_code}' -b "$jar" -X POST \
+            -H 'Content-Type: application/json' -H "X-CSRFToken: $token" -H 'X-Forwarded-Proto: https' \
+            -H 'Origin: https://localhost:10000' \
+            -d '{"email":"smoke@example.com","phone_number":"+2348031234567","password":"smoke-test-password"}' \
+            http://localhost:10000/api/v1/auth/signup/)
+          test "$status" = 403
+          grep -q 'by invitation' /tmp/signup.json
+          rm -f "$jar"
           status=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-Proto: https' http://localhost:10000/api/v1/lessons/missing/)
           test "$status" = 404
           asset=$(grep -o '/static/site/assets/[^" ]*\.js' /tmp/site.html | head -1)

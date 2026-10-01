@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  ApiError, fieldErrors, getCourse, getCourses, getLesson, getSession, getSiteProfile,
-  isAccountTaken, isSignInRequired, signInAccount, signInRequiredPayload, signUpAccount,
+  ApiError, fieldErrors, getCourse, getCourses, getInviteStatus, getLesson, getSession, getSiteProfile,
+  isAccountTaken, isInviteProblem, isSignInRequired, signInAccount, signInRequiredPayload, signUpAccount,
 } from './api'
 
 const fetchMock = vi.fn<typeof fetch>()
@@ -91,7 +91,10 @@ describe('production API client', () => {
 })
 
 describe('account API calls', () => {
-  const session = { authenticated: false, learner: null, content_access: 'lessons', sign_in_path: '/signin', csrf_token: 'next-token' }
+  const session = {
+    authenticated: false, learner: null, content_access: 'lessons', registration: 'invite',
+    sign_in_path: '/signin', csrf_token: 'next-token',
+  }
 
   it('posts JSON with the CSRF token the session issued', async () => {
     fetchMock.mockResolvedValue(jsonResponse(session))
@@ -114,14 +117,52 @@ describe('account API calls', () => {
     expect(init?.headers).toEqual({ Accept: 'application/json' })
   })
 
-  it('signs up through the same origin and returns the rotated token', async () => {
+  it('signs up through the same origin, spending the invitation link', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ ...session, authenticated: true }, 201))
     const response = await signUpAccount({
       email: 'ada@example.com', phone_number: '+2348031234567', password: 'resistor-code',
-      confirm_password: 'resistor-code', remember: true,
+      confirm_password: 'resistor-code', remember: true, invite: 'link-token',
     }, 'token-1')
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/auth/signup/')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({ invite: 'link-token' })
     expect(response.csrf_token).toBe('next-token')
+  })
+
+  it('asks about an invitation link with a read-only request', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ registration: 'invite', valid: true, message: 'Ready.' }))
+    const status = await getInviteStatus('a/b c')
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/auth/invite/a%2Fb%20c/', expect.objectContaining({
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    }))
+    expect(status.valid).toBe(true)
+  })
+
+  it('recognizes a refused invitation link', async () => {
+    for (const payload of [{ invite_required: true }, { invite_invalid: true, reason: 'used' }]) {
+      fetchMock.mockResolvedValue(jsonResponse({ message: 'Registration is by invitation.', ...payload }, 403))
+      const error = await signUpAccount({
+        email: 'ada@example.com', phone_number: '+2348031234567', password: 'resistor-code',
+        confirm_password: 'resistor-code', remember: false,
+      }, 'token-1').catch((reason: unknown) => reason)
+      expect(isInviteProblem(error)).toBe(true)
+      expect((error as ApiError).message).toBe('Registration is by invitation.')
+    }
+  })
+
+  it('does not call a lockout or a duplicate email an invitation problem', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ message: 'Too many sign-in attempts.', locked: true }, 429))
+    const locked = await signInAccount({ email: 'ada@example.com', password: 'x', remember: false }, 'token-1')
+      .catch((reason: unknown) => reason)
+    expect(isInviteProblem(locked)).toBe(false)
+
+    fetchMock.mockResolvedValue(jsonResponse({ message: 'Already registered.', account_exists: true }, 409))
+    const taken = await signUpAccount({
+      email: 'ada@example.com', phone_number: '+2348031234567', password: 'resistor-code',
+      confirm_password: 'resistor-code', remember: false,
+    }, 'token-1').catch((reason: unknown) => reason)
+    expect(isInviteProblem(taken)).toBe(false)
+    expect(isAccountTaken(taken)).toBe(true)
   })
 
   it('turns a rejected sign-up into per-field messages', async () => {
@@ -170,6 +211,7 @@ describe('account API calls', () => {
     expect(() => fieldErrors(error)).not.toThrow()
     expect(isSignInRequired(error)).toBe(false)
     expect(isAccountTaken(error)).toBe(false)
+    expect(isInviteProblem(error)).toBe(false)
     expect(signInRequiredPayload(error)).toBeNull()
   })
 

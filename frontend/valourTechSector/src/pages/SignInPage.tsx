@@ -6,7 +6,7 @@ import { LearnerAuthForm } from '../components/LearnerAuthForm'
 import { LoadingState } from '../components/States'
 
 export function SignInPage() {
-  const { status, isAuthenticated } = useAuth()
+  const { status, isAuthenticated, registration } = useAuth()
   const [searchParams] = useSearchParams()
   const next = safeNextPath(searchParams.get('next'))
 
@@ -41,6 +41,12 @@ export function SignInPage() {
           <p className="auth-aside-note">
             Forgotten your password? <Link to="/contact">Contact the team <ArrowUpRight size={13} aria-hidden="true" /></Link> and we will help you back in.
           </p>
+          {registration !== 'open' && (
+            <p className="auth-aside-note">
+              No account yet? Places are opened with a personal invitation link.{' '}
+              <Link to="/contact">Ask the team for yours <ArrowUpRight size={13} aria-hidden="true" /></Link>
+            </p>
+          )}
         </aside>
       </section>
     </>

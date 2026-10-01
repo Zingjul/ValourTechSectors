@@ -18,9 +18,11 @@ Local setup: [`backend/README.md`](backend/README.md) and [`frontend/valourTechS
 
 ## Learner accounts
 
-Sign-up asks for an **email address**, a **phone number**, and a password the learner chooses, then signs them in immediately. Sign-in is email + password, with "keep me signed in" for a longer session. Learner records live in their own table, apart from the staff accounts that reach `/admin/`, and are listed in the admin under **Learners** (searchable by email or phone).
+**Registration is by invitation.** There is no public sign-up page: the owner generates a link in `/admin/` → **Registration invites**, copies it, and sends it privately (WhatsApp, email, in person). That link opens `/signup?invite=…`, registers **one** person, and then stops working — forwarding it cannot admit anyone else. Links can be given a private note, an expiry (14 days by default), and can be revoked or extended in bulk.
 
-By default, lesson notes, videos, and file downloads need a signed-in learner, while the home page, course catalogue, course outlines, and contact details stay public so visitors can see what they are signing up for. `LEARNER_CONTENT_ACCESS` changes that without a code change: `open` keeps the whole site public (accounts are then only a record of who signed up), `lessons` is the default, and `everything` also closes the catalogue.
+Registering asks for an **email address**, a **phone number**, and a password the learner chooses, then signs them in immediately. After that, sign-in is email + password whenever they want, with "keep me signed in" for a longer session. Learner records live in their own table, apart from the staff accounts that reach `/admin/`, and are listed in the admin under **Learners** (searchable by email or phone, with the link that admitted each one). `LEARNER_REGISTRATION=open` brings public sign-up back without a code change.
+
+Lesson notes, videos, and file downloads need a signed-in learner, while the home page, course catalogue, course outlines, and contact details stay public so visitors can see what they are asking access to. `LEARNER_CONTENT_ACCESS` changes that line without a code change: `open` keeps the whole site public (accounts are then only a record of who joined), `lessons` is the default, and `everything` also closes the catalogue.
 
 Learners cannot reset their own passwords yet, because the site has no email delivery configured. Until an email provider is added, staff set a new password from the learner's admin page and share it privately. Failed sign-ins are counted per email address and lock that address out for a while; no visitor IP address is stored.
 

@@ -1,8 +1,11 @@
 """Learner sign-up, sign-in, and session endpoints.
 
-Sign-up records an email address and a phone number plus the learner's own
-password, then starts their session straight away so they land inside the site
-instead of on another form. Sessions are cookie based on the same origin, so
+Registration is by invitation. Staff generate a single-use link in the admin
+and send it to the person they want to admit; sign-up spends that link, records
+an email address and a phone number plus the learner's own password, then starts
+their session straight away so they land inside the site instead of on another
+form. A link creates one account and then stops working, so forwarding it cannot
+admit a second person. Sessions are cookie based on the same origin, so
 every mutating call carries a CSRF token. The token travels in the JSON body
 rather than a script-readable cookie because ``CSRF_COOKIE_HTTPONLY`` stays on.
 
@@ -22,8 +25,9 @@ from django.middleware.csrf import get_token
 from django.views.decorators.http import require_GET, require_POST
 
 from .auth_backends import current_learner
-from .models import Learner
+from .models import Learner, RegistrationInvite
 from .validators import (
+    is_invite_token_shape,
     normalize_email,
     validate_learner_email,
     validate_learner_password,
@@ -38,6 +42,17 @@ LEARNER_AUTH_BACKEND = "valour.auth_backends.LearnerBackend"
 # or an attempt to make the process spend time on junk.
 MAX_PAYLOAD_BYTES = 8 * 1024
 MAX_PASSWORD_LENGTH = 200
+
+# One wording per way a link can fail, so the sign-up page can explain itself
+# instead of showing a form that is going to be refused. Nothing here reveals
+# who used a link or which email addresses are registered.
+INVITE_MESSAGES = {
+    "missing": "Registration is by invitation. Ask the team to send you your personal link.",
+    "unknown": "We could not find that invitation link. Ask the team to send you a new one.",
+    "used": "That invitation link has already been used. Sign in, or ask the team for a new link.",
+    "expired": "That invitation link has expired. Ask the team to send you a new one.",
+    "revoked": "That invitation link was withdrawn. Ask the team if you still need access.",
+}
 
 
 def learner_payload(learner):
@@ -57,6 +72,8 @@ def session_response(request, learner, *, status=200):
             "learner": learner_payload(learner) if learner else None,
             # The site uses this to decide whether to show sign-in prompts.
             "content_access": settings.LEARNER_CONTENT_ACCESS,
+            # And whether registration needs an invitation link.
+            "registration": settings.LEARNER_REGISTRATION,
             "sign_in_path": SIGN_IN_PATH,
             # login()/logout() rotate the CSRF secret, so hand back the new token.
             "csrf_token": get_token(request),
@@ -106,6 +123,50 @@ def _start_session(request, learner, payload):
         request.session.set_expiry(0)  # End with the browser, like a staff session.
 
 
+class InviteAlreadySpent(Exception):
+    """Raised inside the sign-up transaction so the account is rolled back too."""
+
+    def __init__(self, response):
+        super().__init__("That invitation link can no longer register anyone.")
+        self.response = response
+
+
+def _invite_token(payload, request):
+    """Take the token from the JSON body, or from ?invite= if a form posts it."""
+    for value in (payload.get("invite"), request.GET.get("invite")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _invite_error(reason):
+    return json_response(
+        {
+            "message": INVITE_MESSAGES.get(reason, INVITE_MESSAGES["unknown"]),
+            "registration": settings.LEARNER_REGISTRATION,
+            "invite_required": reason == "missing",
+            "invite_invalid": reason != "missing",
+            "reason": reason,
+            "sign_in_path": SIGN_IN_PATH,
+        },
+        status=403,
+    )
+
+
+def resolve_invite(token):
+    """Return ``(invite, reason)``; reason is empty when the link can register.
+
+    Revoked beats used beats expired so the message a learner sees matches what
+    staff did, whichever happened last.
+    """
+    if not is_invite_token_shape(token):
+        return None, "unknown"
+    invite = RegistrationInvite.objects.filter(token=token).first()
+    if invite is None:
+        return None, "unknown"
+    return invite, "" if invite.is_available else invite.status
+
+
 def _email_taken_response():
     return json_response(
         {
@@ -152,6 +213,17 @@ def signup(request):
     if payload is None:
         return json_response({"message": "Send the sign-up details as JSON."}, status=400)
 
+    # The invitation is checked before the fields: without a usable link there
+    # is nothing to register, and the field rules stay private to invite holders.
+    invite = None
+    if settings.LEARNER_REGISTRATION == "invite":
+        token = _invite_token(payload, request)
+        if not token:
+            return _invite_error("missing")
+        invite, reason = resolve_invite(token)
+        if reason:
+            return _invite_error(reason)
+
     email = _text(payload, "email")
     phone_number = _text(payload, "phone_number", limit=40)
     password = _secret(payload, "password")
@@ -178,9 +250,22 @@ def signup(request):
         return _email_taken_response()
     try:
         with transaction.atomic():
+            if invite is not None:
+                # Re-read under a row lock: two people holding one forwarded
+                # link must not both get an account from it.
+                locked = RegistrationInvite.objects.select_for_update().filter(pk=invite.pk).first()
+                if locked is None or not locked.is_available:
+                    raise InviteAlreadySpent(_invite_error(locked.status if locked else "unknown"))
+                invite = locked
             learner = Learner.objects.create_user(email=email, phone_number=phone_number, password=password)
+            if invite is not None:
+                invite.consume(learner)
+    except InviteAlreadySpent as error:
+        # Rolling back keeps the account out too: a spent link creates nobody.
+        return error.response
     except IntegrityError:
-        # Two sign-ups for one email can race; the first saved record wins.
+        # Two sign-ups for one email can race; the first saved record wins. The
+        # link is not spent, so the learner can try again with another address.
         return _email_taken_response()
 
     _start_session(request, learner, payload)
@@ -217,6 +302,47 @@ def signin(request):
 def signout(request):
     logout(request)
     return session_response(request, None)
+
+
+@require_GET
+def invite_status(request, token):
+    """Say whether an invitation link can still register someone.
+
+    The sign-up page asks this before showing a form, so a learner who opens a
+    spent or expired link is told plainly instead of being refused after typing
+    their details. It answers about the token only: no learner details, and no
+    way to discover which links exist.
+    """
+    if settings.LEARNER_REGISTRATION != "invite":
+        return json_response(
+            {
+                "registration": settings.LEARNER_REGISTRATION,
+                "valid": True,
+                "message": "Anyone can register on this site.",
+                "sign_in_path": SIGN_IN_PATH,
+            }
+        )
+
+    invite, reason = resolve_invite(token)
+    if reason:
+        return json_response(
+            {
+                "registration": settings.LEARNER_REGISTRATION,
+                "valid": False,
+                "reason": reason,
+                "message": INVITE_MESSAGES.get(reason, INVITE_MESSAGES["unknown"]),
+                "sign_in_path": SIGN_IN_PATH,
+            }
+        )
+    return json_response(
+        {
+            "registration": settings.LEARNER_REGISTRATION,
+            "valid": True,
+            "expires_at": invite.expires_at.isoformat() if invite.expires_at else None,
+            "message": "This invitation link is ready. Add your details to create your account.",
+            "sign_in_path": SIGN_IN_PATH,
+        }
+    )
 
 
 @require_GET

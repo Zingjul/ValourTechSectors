@@ -185,10 +185,17 @@ export type Learner = {
 /** How much of the site an account opens, decided by LEARNER_CONTENT_ACCESS. */
 export type ContentAccess = 'open' | 'lessons' | 'everything'
 
+/**
+ * Whether an account needs a link from the owner first, decided by
+ * LEARNER_REGISTRATION. 'invite' hides sign-up from the public site.
+ */
+export type RegistrationMode = 'invite' | 'open'
+
 export type SessionResponse = {
   authenticated: boolean
   learner: Learner | null
   content_access: ContentAccess
+  registration: RegistrationMode
   sign_in_path: string
   csrf_token: string
 }
@@ -199,6 +206,8 @@ export type SignUpDetails = {
   password: string
   confirm_password: string
   remember: boolean
+  /** The single-use link staff issued. Required unless registration is open. */
+  invite?: string
 }
 
 export type SignInCredentials = { email: string; password: string; remember: boolean }
@@ -229,6 +238,23 @@ export function signInRequiredPayload(error: unknown): SignInRequiredPayload | n
   return payloadOf(error) as unknown as SignInRequiredPayload
 }
 
+/** What the API says about an invitation link before a form is shown. */
+export type InviteStatus = {
+  registration: RegistrationMode
+  valid: boolean
+  reason?: 'missing' | 'unknown' | 'used' | 'expired' | 'revoked'
+  message: string
+  expires_at?: string | null
+  sign_in_path?: string
+}
+
+/** True when sign-up was refused for want of a usable invitation link. */
+export function isInviteProblem(error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 403) return false
+  const payload = payloadOf(error)
+  return payload?.invite_required === true || payload?.invite_invalid === true
+}
+
 /** True when the email address already has an account, so sign-in is the way in. */
 export function isAccountTaken(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && payloadOf(error)?.account_exists === true
@@ -252,6 +278,11 @@ export function getSession(options?: RequestOptions) {
 
 export function signUpAccount(details: SignUpDetails, csrfToken: string, options?: RequestOptions) {
   return request<SessionResponse>('/api/v1/auth/signup/', { ...options, method: 'POST', body: details, csrfToken })
+}
+
+/** Ask whether a link can still register someone, without spending it. */
+export function getInviteStatus(token: string, options?: RequestOptions) {
+  return request<InviteStatus>(`/api/v1/auth/invite/${encodeURIComponent(token)}/`, options)
 }
 
 export function signInAccount(credentials: SignInCredentials, csrfToken: string, options?: RequestOptions) {

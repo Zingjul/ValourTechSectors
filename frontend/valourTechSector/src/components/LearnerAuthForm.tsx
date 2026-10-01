@@ -2,6 +2,7 @@ import { useState, type ChangeEvent, type FormEvent } from 'react'
 import { ArrowRight, AtSign, Eye, EyeOff, KeyRound, LockKeyhole, Phone } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { fieldErrors, isAccountTaken, type SignInCredentials, type SignUpDetails } from '../api'
+
 import { useAuth } from '../auth/useAuth'
 import { withNext } from '../auth/nextPath'
 
@@ -47,8 +48,12 @@ function FieldError({ id, messages }: { id: string; messages?: string[] }) {
   return <p className="auth-error" id={id} role="alert">{messages[0]}</p>
 }
 
-export function LearnerAuthForm({ mode, next }: { mode: Mode; next: string }) {
-  const { signIn, signUp } = useAuth()
+/**
+ * One form for both doors. `invite` carries the single-use link staff issued,
+ * which is what makes registration possible when the site is invitation-only.
+ */
+export function LearnerAuthForm({ mode, next, invite }: { mode: Mode; next: string; invite?: string }) {
+  const { signIn, signUp, registration } = useAuth()
   const navigate = useNavigate()
   const [values, setValues] = useState<Values>(EMPTY)
   const [remember, setRemember] = useState(false)
@@ -94,6 +99,8 @@ export function LearnerAuthForm({ mode, next }: { mode: Mode; next: string }) {
           confirm_password: values.confirm_password,
           remember,
         }
+        // The link is spent by this submission, so it travels with it.
+        if (invite) details.invite = invite
         await signUp(details)
       } else {
         const credentials: SignInCredentials = { email: values.email.trim(), password: values.password, remember }
@@ -234,8 +241,10 @@ export function LearnerAuthForm({ mode, next }: { mode: Mode; next: string }) {
       <p className="auth-switch">
         {isSignUp ? (
           <>Already have an account? <Link to={withNext('/signin', next)}>Sign in</Link></>
-        ) : (
+        ) : registration === 'open' ? (
           <>New here? <Link to={withNext('/signup', next)}>Create a free account</Link></>
+        ) : (
+          <>Access is by invitation. <Link to="/contact">Ask the team for your link</Link>.</>
         )}
       </p>
     </form>

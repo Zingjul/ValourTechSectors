@@ -18,8 +18,9 @@ function PageFrame({ children }: PropsWithChildren) {
 }
 
 /**
- * The account end of the navigation. Visitors get a way in; signed-in learners
- * see who they are and how to sign out on a shared device.
+ * The account end of the navigation. Visitors get one way in, because accounts
+ * are created from an invitation link rather than from a public sign-up page;
+ * signed-in learners see who they are and how to sign out on a shared device.
  */
 function AccountNavigation({ onNavigate }: { onNavigate: () => void }) {
   const { status, learner, isAuthenticated, signOut } = useAuth()
@@ -27,10 +28,7 @@ function AccountNavigation({ onNavigate }: { onNavigate: () => void }) {
   if (status === 'loading') return <span className="nav-account-skeleton" aria-hidden="true" />
 
   if (!isAuthenticated) return (
-    <>
-      <NavLink to="/signin" onClick={onNavigate} className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>Sign in</NavLink>
-      <NavLink className="nav-cta" to="/signup" onClick={onNavigate}>Create free account <ArrowUpRight size={16} aria-hidden="true" /></NavLink>
-    </>
+    <NavLink className="nav-cta" to="/signin" onClick={onNavigate}>Sign in <ArrowUpRight size={16} aria-hidden="true" /></NavLink>
   )
 
   return (
@@ -76,12 +74,14 @@ function HeaderNavigation() {
 }
 
 function FooterAccountLinks() {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, registration } = useAuth()
   if (isAuthenticated) return <Link to="/courses">My lessons</Link>
   return (
     <>
       <Link to="/signin">Sign in</Link>
-      <Link to="/signup">Create account</Link>
+      {registration === 'open'
+        ? <Link to="/signup">Create account</Link>
+        : <Link to="/contact">Request access</Link>}
     </>
   )
 }

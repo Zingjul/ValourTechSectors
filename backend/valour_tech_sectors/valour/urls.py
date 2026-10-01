@@ -11,6 +11,7 @@ urlpatterns = [
     path("auth/signin/", auth_views.signin, name="auth-signin"),
     path("auth/signout/", auth_views.signout, name="auth-signout"),
     path("auth/session/", auth_views.current_session, name="auth-session"),
+    path("auth/invite/<str:token>/", auth_views.invite_status, name="auth-invite"),
     path("courses/", views.course_list, name="course-list"),
     path("courses/<slug:slug>/", views.course_detail, name="course-detail"),
     path("lessons/<slug:slug>/", views.lesson_detail, name="lesson-detail"),

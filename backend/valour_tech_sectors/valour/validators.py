@@ -82,6 +82,16 @@ def validate_learner_phone(value):
     return phone_number
 
 
+# secrets.token_urlsafe(32) is 43 characters from this alphabet. Checking the
+# shape first keeps junk out of the query and makes an invalid link cheap.
+_INVITE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+
+
+def is_invite_token_shape(value):
+    """True when a string could be one of our invitation tokens."""
+    return isinstance(value, str) and bool(_INVITE_TOKEN_PATTERN.match(value))
+
+
 def learner_password_validators(min_length=None):
     """Learner password rules, kept separate from the stricter staff policy."""
     return [

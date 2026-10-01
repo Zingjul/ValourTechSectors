@@ -1,5 +1,6 @@
-"""Learner sign-up, sign-in, session, and content-access tests."""
+"""Learner registration links, sign-up, sign-in, session, and access tests."""
 
+from datetime import timedelta
 from importlib import import_module
 
 from axes.models import AccessAttempt
@@ -10,9 +11,13 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from .models import Course, Learner, Lesson, Material, Section, VideoLink
+from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
+
+from .models import Course, Learner, Lesson, Material, RegistrationInvite, Section, VideoLink
 from .testing import (
     LEARNER_PASSWORD,
+    NO_INVITE,
+    create_invite,
     create_learner,
     force_sign_in,
     json_body,
@@ -52,10 +57,21 @@ class PublishedLessonTestCase(TestCase):
 
 
 class SignUpTests(TestCase):
+    """Sign-up with a single-use link: the only way to create an account."""
+
+    def setUp(self):
+        self.invite = create_invite(note="Sent to Ada on WhatsApp")
+
+    def signup(self, payload, invite=NO_INVITE, client=None, **kwargs):
+        """Post a sign-up, spending this test's link unless told otherwise."""
+        data = dict(payload)
+        token = self.invite.token if invite is NO_INVITE else invite
+        if token:
+            data["invite"] = token
+        return post_json(client or self.client, "valour:auth-signup", data, **kwargs)
+
     def test_sign_up_records_the_email_and_phone_number_and_starts_a_session(self):
-        response = post_json(
-            self.client,
-            "valour:auth-signup",
+        response = self.signup(
             {"email": "Ada@Example.com", "phone_number": "+234 803 123 4567", "password": LEARNER_PASSWORD},
         )
 
@@ -70,13 +86,16 @@ class SignUpTests(TestCase):
         self.assertEqual(learner.phone_number, "+2348031234567")
         self.assertTrue(learner.check_password(LEARNER_PASSWORD))
         self.assertEqual(Learner.objects.count(), 1)
+        # The link that admitted them is spent, and the record says so.
+        self.invite.refresh_from_db()
+        self.assertEqual(self.invite.used_by, learner)
+        self.assertIsNotNone(self.invite.used_at)
+        self.assertEqual(self.invite.status, "used")
         # The learner is signed in immediately: no second form after sign-up.
         self.assertEqual(self.client.session.get("_auth_user_backend"), "valour.auth_backends.LearnerBackend")
 
     def test_passwords_are_hashed_and_never_echoed_back(self):
-        response = post_json(
-            self.client,
-            "valour:auth-signup",
+        response = self.signup(
             {"email": "ada@example.com", "phone_number": "+2348031234567", "password": LEARNER_PASSWORD},
         )
 
@@ -89,9 +108,7 @@ class SignUpTests(TestCase):
     def test_sign_up_rejects_a_second_account_for_the_same_email(self):
         create_learner()
 
-        response = post_json(
-            self.client,
-            "valour:auth-signup",
+        response = self.signup(
             {"email": "ADA@example.com", "phone_number": "+2348031234567", "password": LEARNER_PASSWORD},
         )
 
@@ -99,11 +116,12 @@ class SignUpTests(TestCase):
         self.assertTrue(response.json()["account_exists"])
         self.assertIn("Sign in instead", response.json()["message"])
         self.assertEqual(Learner.objects.count(), 1)
+        # A refused sign-up leaves the link usable for the learner's next try.
+        self.invite.refresh_from_db()
+        self.assertTrue(self.invite.is_available)
 
     def test_sign_up_reports_one_error_per_invalid_field(self):
-        response = post_json(
-            self.client,
-            "valour:auth-signup",
+        response = self.signup(
             {"email": "ada@", "phone_number": "call me", "password": "123", "confirm_password": "456"},
         )
 
@@ -119,20 +137,20 @@ class SignUpTests(TestCase):
         for number in accepted:
             with self.subTest(number=number):
                 Learner.objects.all().delete()
-                response = post_json(
-                    self.client,
-                    "valour:auth-signup",
+                # Each registration spends a link, so each one gets its own.
+                response = self.signup(
                     {"email": "ada@example.com", "phone_number": number, "password": LEARNER_PASSWORD},
+                    invite=create_invite().token,
                 )
                 self.assertEqual(response.status_code, 201, response.content)
 
+        still_usable = create_invite()
         for number in rejected:
             with self.subTest(number=number):
                 Learner.objects.all().delete()
-                response = post_json(
-                    self.client,
-                    "valour:auth-signup",
+                response = self.signup(
                     {"email": "ada@example.com", "phone_number": number, "password": LEARNER_PASSWORD},
+                    invite=still_usable.token,
                 )
                 self.assertEqual(response.status_code, 400)
                 self.assertIn("phone_number", response.json()["errors"])
@@ -148,20 +166,17 @@ class SignUpTests(TestCase):
 
         for label, email, phone_number, password in weak:
             with self.subTest(password=label):
-                response = post_json(
-                    self.client,
-                    "valour:auth-signup",
-                    {"email": email, "phone_number": phone_number, "password": password},
-                )
+                response = self.signup({"email": email, "phone_number": phone_number, "password": password})
                 self.assertEqual(response.status_code, 400, response.content)
                 self.assertIn("password", response.json()["errors"])
         self.assertFalse(Learner.objects.exists())
+        # The invitation is still unused, because nothing was registered.
+        self.invite.refresh_from_db()
+        self.assertTrue(self.invite.is_available)
 
     def test_sign_up_keeps_the_learner_rules_instead_of_the_staff_password_policy(self):
         # Staff must use 12 characters; a learner may use 8.
-        response = post_json(
-            self.client,
-            "valour:auth-signup",
+        response = self.signup(
             {"email": "ada@example.com", "phone_number": "+2348031234567", "password": "voltmeter"},
         )
 
@@ -195,10 +210,9 @@ class SignUpTests(TestCase):
         self.assertIn("POST", response.json()["message"])
 
         strict = Client(enforce_csrf_checks=True)
-        response = post_json(
-            strict,
-            "valour:auth-signup",
+        response = self.signup(
             {"email": "ada@example.com", "phone_number": "+2348031234567", "password": LEARNER_PASSWORD},
+            client=strict,
         )
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json(), {"message": "Access denied."})
@@ -207,14 +221,196 @@ class SignUpTests(TestCase):
     def test_an_already_signed_in_learner_cannot_create_another_account(self):
         force_sign_in(self.client)
 
-        response = post_json(
-            self.client,
-            "valour:auth-signup",
+        response = self.signup(
             {"email": "second@example.com", "phone_number": "+2348031234567", "password": LEARNER_PASSWORD},
         )
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(Learner.objects.count(), 1)
+
+
+class RegistrationInviteTests(TestCase):
+    """One link admits one person, and nothing else admits anyone."""
+
+    def setUp(self):
+        self.invite = create_invite(note="For the new cohort")
+        self.details = {
+            "email": "ada@example.com",
+            "phone_number": "+234 803 123 4567",
+            "password": LEARNER_PASSWORD,
+        }
+
+    def register(self, payload=None, token=None, client=None, **kwargs):
+        data = dict(self.details if payload is None else payload)
+        if token is not None:
+            data["invite"] = token
+        return post_json(client or self.client, "valour:auth-signup", data, **kwargs)
+
+    def invite_status(self, token=None):
+        return self.client.get(reverse("valour:auth-invite", args=[token or self.invite.token]))
+
+    def test_sign_up_without_a_link_is_refused_and_creates_no_account(self):
+        response = self.register()
+
+        self.assertEqual(response.status_code, 403)
+        body = response.json()
+        self.assertTrue(body["invite_required"])
+        self.assertEqual(body["reason"], "missing")
+        self.assertIn("by invitation", body["message"])
+        self.assertEqual(body["sign_in_path"], "/signin")
+        self.assertFalse(Learner.objects.exists())
+
+    def test_a_link_registers_one_person_and_then_stops_working(self):
+        first = self.register(token=self.invite.token)
+        self.assertEqual(first.status_code, 201, first.content)
+        self.assertTrue(first.json()["authenticated"])
+
+        self.invite.refresh_from_db()
+        self.assertEqual(self.invite.status, "used")
+        self.assertEqual(self.invite.used_by, Learner.objects.get())
+
+        # Forwarding the link cannot admit a second person. A second browser,
+        # because the first one is now signed in as the learner it registered.
+        second = self.register(
+            payload={**self.details, "email": "second@example.com"},
+            token=self.invite.token,
+            client=Client(),
+        )
+        self.assertEqual(second.status_code, 403)
+        self.assertEqual(second.json()["reason"], "used")
+        self.assertEqual(Learner.objects.count(), 1)
+
+    def test_an_unknown_or_malformed_link_is_refused_the_same_way(self):
+        for token in ("not-one-of-ours", "a" * 43, "AbCdEf0123456789", "x" * 65, "../etc/passwd"):
+            with self.subTest(token=token):
+                response = self.register(token=token)
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.json()["reason"], "unknown")
+                self.assertFalse(Learner.objects.exists())
+
+    def test_a_revoked_link_stops_working_at_once(self):
+        self.invite.is_revoked = True
+        self.invite.save(update_fields=["is_revoked"])
+
+        response = self.register(token=self.invite.token)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["reason"], "revoked")
+        self.assertFalse(Learner.objects.exists())
+
+    def test_an_expired_link_is_refused_but_can_be_given_more_time(self):
+        self.invite.expires_at = timezone.now() - timedelta(minutes=1)
+        self.invite.save(update_fields=["expires_at"])
+        self.assertEqual(self.register(token=self.invite.token).status_code, 403)
+
+        self.invite.expires_at = timezone.now() + timedelta(days=7)
+        self.invite.save(update_fields=["expires_at"])
+        self.assertEqual(self.register(token=self.invite.token).status_code, 201)
+
+    def test_a_link_can_be_left_to_stay_usable_until_it_is_spent(self):
+        invite = create_invite(expires_at=None)
+        self.assertIsNone(invite.expires_at)
+        self.assertTrue(invite.is_available)
+
+        response = self.register(token=invite.token)
+
+        self.assertEqual(response.status_code, 201, response.content)
+        invite.refresh_from_db()
+        self.assertEqual(invite.status, "used")
+
+    def test_a_link_survives_a_refused_sign_up_and_still_registers_someone(self):
+        refused = self.register(payload={**self.details, "email": "ada@"}, token=self.invite.token)
+        self.assertEqual(refused.status_code, 400)
+
+        self.invite.refresh_from_db()
+        self.assertTrue(self.invite.is_available)
+        self.assertEqual(self.register(token=self.invite.token).status_code, 201)
+
+    def test_a_duplicate_email_does_not_spend_the_link(self):
+        create_learner()
+
+        taken = self.register(token=self.invite.token)
+        self.assertEqual(taken.status_code, 409)
+
+        # Someone else can still use the link that was issued.
+        other = self.register(payload={**self.details, "email": "grace@example.com"}, token=self.invite.token)
+        self.assertEqual(other.status_code, 201, other.content)
+        self.invite.refresh_from_db()
+        self.assertEqual(self.invite.used_by.email, "grace@example.com")
+
+    def test_the_link_can_travel_in_the_query_string(self):
+        response = self.client.post(
+            f"{reverse('valour:auth-signup')}?invite={self.invite.token}",
+            data=json_body(self.details),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.invite.refresh_from_db()
+        self.assertEqual(self.invite.status, "used")
+
+    def test_open_registration_does_not_need_a_link(self):
+        with override_settings(LEARNER_REGISTRATION="open"):
+            response = self.register()
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.invite.refresh_from_db()
+        self.assertTrue(self.invite.is_available, "Open sign-up must not spend an issued link")
+
+    def test_generated_tokens_are_long_random_url_safe_strings(self):
+        tokens = {create_invite().token for _ in range(20)}
+        self.assertEqual(len(tokens), 20, "Every generated link needs its own token")
+        for token in tokens:
+            self.assertGreaterEqual(len(token), 40)
+            self.assertRegex(token, r"^[A-Za-z0-9_-]+$")
+
+    def test_the_link_status_endpoint_explains_a_link_without_opening_it(self):
+        ready = self.invite_status()
+        self.assertEqual(ready.status_code, 200)
+        body = ready.json()
+        self.assertTrue(body["valid"])
+        self.assertEqual(body["registration"], "invite")
+        self.assertIn("expires_at", body)
+        self.assertEqual(ready["Cache-Control"], "private, no-store")
+
+        self.register(token=self.invite.token)
+        spent = self.invite_status().json()
+        self.assertFalse(spent["valid"])
+        self.assertEqual(spent["reason"], "used")
+        # It says the link was used, never by whom.
+        self.assertNotIn("ada@example.com", json_body(spent))
+
+    def test_the_link_status_endpoint_reports_every_way_a_link_can_fail(self):
+        self.invite.is_revoked = True
+        self.invite.save(update_fields=["is_revoked"])
+        self.assertEqual(self.invite_status().json()["reason"], "revoked")
+
+        self.invite.is_revoked = False
+        self.invite.expires_at = timezone.now() - timedelta(days=1)
+        self.invite.save(update_fields=["is_revoked", "expires_at"])
+        self.assertEqual(self.invite_status().json()["reason"], "expired")
+
+        self.assertEqual(self.invite_status("a" * 43).json()["reason"], "unknown")
+        self.assertFalse(Learner.objects.exists(), "Asking about a link must not register anyone")
+
+    def test_the_link_status_endpoint_is_read_only(self):
+        response = self.client.post(reverse("valour:auth-invite", args=[self.invite.token]))
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response["Allow"], "GET")
+
+    def test_the_private_note_never_leaves_the_admin(self):
+        for response in (
+            self.invite_status(),
+            self.client.get(reverse("valour:auth-session")),
+        ):
+            self.assertNotIn("new cohort", response.content.decode())
+
+    def test_the_session_payload_tells_the_site_that_links_are_needed(self):
+        self.assertEqual(self.client.get(reverse("valour:auth-session")).json()["registration"], "invite")
+
+        with override_settings(LEARNER_REGISTRATION="open"):
+            self.assertEqual(self.client.get(reverse("valour:auth-session")).json()["registration"], "open")
+
 
 
 class SignInTests(TestCase):
@@ -637,3 +833,171 @@ class LearnerAdminTests(TestCase):
     def test_the_admin_requires_a_staff_session(self):
         response = Client().get(reverse("admin:valour_learner_changelist"))
         self.assertEqual(response.status_code, 302)
+
+
+# The manifest static storage is strict once the test runner turns DEBUG off and
+# collectstatic has not run, so admin pages render against the plain storages.
+@override_settings(STORAGES={
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+})
+class RegistrationInviteAdminTests(TestCase):
+    """The owner hands out access from the admin, one link at a time."""
+
+    def setUp(self):
+        self.owner = get_user_model().objects.create_superuser(
+            username="owner", email="owner@example.com", password=LEARNER_PASSWORD
+        )
+        # Named because django-axes is first in AUTHENTICATION_BACKENDS and would
+        # otherwise be recorded as the session backend for a staff login.
+        self.client.force_login(self.owner, backend="django.contrib.auth.backends.ModelBackend")
+
+    def register_through(self, invite, email="ada@example.com"):
+        """Use a link the way a learner does, so the admin sees a spent one."""
+        response = Client().post(
+            reverse("valour:auth-signup"),
+            data=json_body(
+                {"email": email, "phone_number": "+234 803 123 4567", "password": LEARNER_PASSWORD, "invite": invite.token}
+            ),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+        return Learner.objects.get(email=email)
+
+    def test_staff_generate_a_single_use_link_and_land_where_they_can_copy_it(self):
+        response = self.client.get(reverse("admin:valour_registrationinvite_generate"))
+
+        self.assertEqual(response.status_code, 302)
+        invite = RegistrationInvite.objects.get()
+        self.assertEqual(response["Location"], reverse("admin:valour_registrationinvite_change", args=[invite.pk]))
+        self.assertEqual(invite.created_by, self.owner)
+        self.assertTrue(invite.is_available)
+        self.assertIsNotNone(invite.expires_at, "A generated link should expire by default")
+        self.assertLessEqual(invite.expires_at, timezone.now() + timedelta(days=settings.LEARNER_INVITE_VALID_DAYS))
+
+    def test_the_invite_page_shows_the_full_link_to_send(self):
+        invite = create_invite()
+
+        response = self.client.get(reverse("admin:valour_registrationinvite_change", args=[invite.pk]))
+
+        self.assertContains(response, "Send this link")
+        self.assertContains(response, f"http://testserver{invite.registration_path}")
+        self.assertContains(response, invite.token)
+
+    def test_the_invite_page_says_what_a_spent_link_already_did(self):
+        invite = create_invite(note="Ada, from the WhatsApp group")
+        learner = self.register_through(invite)
+
+        response = self.client.get(reverse("admin:valour_registrationinvite_change", args=[invite.pk]))
+
+        self.assertContains(response, "already registered")
+        self.assertContains(response, learner.email)
+        self.assertContains(response, invite.note)
+
+    def test_the_changelist_offers_the_shortcut_and_shows_each_links_state(self):
+        available = create_invite(note="Still open")
+        spent = create_invite(note="Used up")
+        self.register_through(spent, email="grace@example.com")
+
+        response = self.client.get(reverse("admin:valour_registrationinvite_changelist"))
+
+        self.assertContains(response, "Generate invitation link")
+        self.assertContains(response, "Available")
+        self.assertContains(response, "Used")
+        self.assertContains(response, available.note)
+        self.assertContains(response, "grace@example.com")
+
+    def test_staff_can_search_by_note_token_or_the_learner_a_link_admitted(self):
+        invite = create_invite(note="Ada, from the WhatsApp group")
+        learner = self.register_through(invite)
+        create_invite(note="Someone else")
+
+        by_note = self.client.get(reverse("admin:valour_registrationinvite_changelist"), {"q": "WhatsApp"})
+        by_token = self.client.get(reverse("admin:valour_registrationinvite_changelist"), {"q": invite.token[:16]})
+        by_learner = self.client.get(reverse("admin:valour_registrationinvite_changelist"), {"q": learner.email})
+        for response in (by_note, by_token, by_learner):
+            self.assertContains(response, invite.note)
+        self.assertNotContains(
+            self.client.get(reverse("admin:valour_registrationinvite_changelist"), {"q": "nobody@example.com"}),
+            invite.note,
+        )
+
+    def test_unused_links_can_be_revoked_in_bulk_and_spent_ones_are_left_alone(self):
+        unused = create_invite()
+        spent = create_invite()
+        self.register_through(spent)
+
+        response = self.client.post(
+            reverse("admin:valour_registrationinvite_changelist"),
+            {"action": "revoke_invites", ACTION_CHECKBOX_NAME: [unused.pk, spent.pk]},
+            follow=True,
+        )
+
+        self.assertContains(response, "1 unused link")
+        unused.refresh_from_db()
+        spent.refresh_from_db()
+        self.assertTrue(unused.is_revoked)
+        self.assertFalse(spent.is_revoked, "A spent link keeps the record of how access was given")
+
+    def test_an_expired_link_can_be_given_the_full_validity_again(self):
+        stale = create_invite(expires_at=timezone.now() - timedelta(days=3))
+        self.assertFalse(stale.is_available)
+
+        self.client.post(
+            reverse("admin:valour_registrationinvite_changelist"),
+            {"action": "extend_invites", ACTION_CHECKBOX_NAME: [stale.pk]},
+            follow=True,
+        )
+
+        stale.refresh_from_db()
+        self.assertTrue(stale.is_available)
+        self.assertGreater(stale.expires_at, timezone.now())
+        self.assertEqual(self.register_through(stale).email, "ada@example.com")
+
+    def test_a_spent_link_cannot_be_deleted_so_the_trail_survives(self):
+        spent = create_invite()
+        self.register_through(spent)
+        unused = create_invite()
+
+        self.assertEqual(
+            self.client.get(reverse("admin:valour_registrationinvite_delete", args=[spent.pk])).status_code, 403
+        )
+        self.assertEqual(
+            self.client.get(reverse("admin:valour_registrationinvite_delete", args=[unused.pk])).status_code, 200
+        )
+
+    def test_the_learner_record_shows_which_link_admitted_them(self):
+        invite = create_invite(note="Ada, from the WhatsApp group", created_by=self.owner)
+        learner = self.register_through(invite)
+
+        response = self.client.get(reverse("admin:valour_learner_change", args=[learner.pk]))
+
+        self.assertContains(response, "Ada, from the WhatsApp group")
+        self.assertContains(response, "issued by owner")
+        self.assertContains(response, invite.short_token)
+
+    def test_a_learner_session_cannot_reach_the_invitation_admin(self):
+        learner_client = Client()
+        force_sign_in(learner_client, create_learner())
+
+        for url in (
+            reverse("admin:valour_registrationinvite_changelist"),
+            reverse("admin:valour_registrationinvite_generate"),
+        ):
+            with self.subTest(url=url):
+                response = learner_client.get(url)
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("/admin/login/", response["Location"])
+
+    def test_a_visitor_cannot_generate_a_link(self):
+        visitor = Client()
+
+        for url in (
+            reverse("admin:valour_registrationinvite_changelist"),
+            reverse("admin:valour_registrationinvite_generate"),
+        ):
+            with self.subTest(url=url):
+                response = visitor.get(url)
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("/admin/login/", response["Location"])
+        self.assertFalse(RegistrationInvite.objects.exists())

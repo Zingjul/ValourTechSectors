@@ -1,0 +1,78 @@
+/* Registration invites: make a link's state readable at a glance, and give the
+   copyable invitation URL somewhere obvious to sit. */
+.invite-status {
+  display: inline-block;
+  padding: 2px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.invite-status--available { color: #1a7f4b; }
+.invite-status--used { color: #5b6472; }
+.invite-status--expired { color: #9a6a00; }
+.invite-status--revoked { color: #a3282d; }
+
+.invite-link-box {
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border: 1px solid #d8dce3;
+  border-left: 4px solid #1a7f4b;
+  border-radius: 6px;
+  background: #f8f9fb;
+}
+
+.invite-link-box.is-spent { border-left-color: #5b6472; background: #f4f5f7; }
+
+.invite-link-box h2 {
+  margin: 0 0 6px;
+  padding: 0;
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #41464f;
+  background: none;
+  border: 0;
+}
+
+.invite-link-box p { margin: 6px 0 0; color: #41464f; }
+
+.invite-link-url {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0;
+  padding: 9px 11px;
+  border: 1px solid #c3c9d2;
+  border-radius: 5px;
+  background: #fff;
+  font-family: var(--font-family-monospace, monospace);
+  font-size: 0.82rem;
+  color: #12151a;
+}
+
+.invite-link-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+
+.invite-link-actions .button {
+  padding: 6px 12px;
+  border: 1px solid #c3c9d2;
+  border-radius: 5px;
+  background: #fff;
+  font-size: 0.78rem;
+  text-decoration: none;
+  color: #12151a;
+}
+
+.invite-link-actions .button:hover { background: #eef1f5; }
+
+.invite-intro {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-left: 4px solid #417690;
+  background: #f2f6f9;
+  color: #24313d;
+}

@@ -18,6 +18,7 @@ const catalog: CatalogResponse = {
   }],
 }
 const signedOut: SessionResponse = {
+  registration: 'invite',
   authenticated: false, learner: null, content_access: 'lessons', sign_in_path: '/signin', csrf_token: 'token-1',
 }
 const profile: SiteProfile = {
@@ -89,7 +90,9 @@ describe('learner routes', () => {
     const notice = screen.getByRole('status')
     expect(screen.queryByText('Resistance is measured in ohms.')).not.toBeInTheDocument()
     expect(within(notice).getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/signin?next=%2Flessons%2Fohms')
-    expect(within(notice).getByRole('link', { name: /Create a free account/ })).toHaveAttribute('href', '/signup?next=%2Flessons%2Fohms')
+    // Registration needs a link from the owner, so the notice asks for access
+    // rather than pointing at a sign-up page that would refuse the visitor.
+    expect(within(notice).getByRole('link', { name: 'Request access' })).toHaveAttribute('href', '/contact')
   })
 
   it('renders an open lesson and its safety guidance', async () => {
