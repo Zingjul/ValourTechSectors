@@ -39,7 +39,7 @@ jobs:
       SUPABASE_S3_ACCESS_KEY_ID: ""
       SUPABASE_S3_SECRET_ACCESS_KEY: ""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -73,7 +73,7 @@ jobs:
       run:
         working-directory: frontend/valourTechSector
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version-file: frontend/valourTechSector/.node-version
@@ -87,7 +87,7 @@ jobs:
     name: Production image / smoke test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build without production secrets
         run: docker build -t valourtech:ci .
       - name: Smoke-test the built site, migrations, readiness, and admin assets
