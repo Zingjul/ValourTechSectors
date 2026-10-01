@@ -1,0 +1,22 @@
+# Python / Django
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.sqlite3-journal
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+media/
+staticfiles/
+
+# Node / Vite
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
