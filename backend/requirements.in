@@ -6,4 +6,4 @@ python-dotenv>=1.2,<2
 django-storages[s3]>=1.14,<2
 gunicorn>=25.3,<26
 whitenoise[brotli]>=6.12,<7
-django-axes>=8.3,<9
+django-axes>=9.0.0,<10
